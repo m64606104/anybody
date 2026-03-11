@@ -527,25 +527,44 @@ async def proactive_thinking():
         now = datetime.utcnow()
         current_hour = (now.hour + 8) % 24  # 转换为北京时间
         
-        # 根据时间段决定是否执行
+        # 从memories中读取用户设置的频率偏好
+        freq_result = supabase.table("memories")\
+            .select("metadata")\
+            .eq("type", "frequency_preference")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        
+        # 默认间隔（分钟）
+        min_interval = 60
+        max_interval = 120
+        
+        if freq_result.data and freq_result.data[0].get("metadata"):
+            pref = freq_result.data[0]["metadata"]
+            min_interval = pref.get("min_interval", 60)
+            max_interval = pref.get("max_interval", 120)
+            # 检查是否在禁止时段
+            no_disturb_start = pref.get("no_disturb_start")
+            no_disturb_end = pref.get("no_disturb_end")
+            if no_disturb_start is not None and no_disturb_end is not None:
+                if no_disturb_start <= current_hour or current_hour < no_disturb_end:
+                    print(f"⏸️ 当前在禁止打扰时段 ({no_disturb_start}:00-{no_disturb_end}:00)")
+                    return
+        else:
+            # 没有用户偏好，使用默认时间段规则
+            if 3 <= current_hour < 7:
+                min_interval, max_interval = 180, 300
+            elif 23 <= current_hour or current_hour < 3:
+                min_interval, max_interval = 120, 240
+            else:
+                min_interval, max_interval = 30, 120
+        
+        # 根据间隔决定是否执行
         if last_proactive_time:
             elapsed_minutes = (now - last_proactive_time).total_seconds() / 60
-            
-            if 3 <= current_hour < 7:
-                # 夜间3-7点：3-5小时随机（180-300分钟）
-                min_interval = random.randint(180, 300)
-                if elapsed_minutes < min_interval:
-                    return
-            elif 23 <= current_hour or current_hour < 3:
-                # 深夜23-3点：2-4小时随机（120-240分钟）
-                min_interval = random.randint(120, 240)
-                if elapsed_minutes < min_interval:
-                    return
-            else:
-                # 白天7-23点：30分钟-2小时随机（30-120分钟）
-                min_interval = random.randint(30, 120)
-                if elapsed_minutes < min_interval:
-                    return
+            target_interval = random.randint(min_interval, max_interval)
+            if elapsed_minutes < target_interval:
+                return
         
         # 更新上次执行时间
         last_proactive_time = now
@@ -588,18 +607,14 @@ async def proactive_thinking():
 （以上是你的角色设定，请完全按照设定来说话和行动）
 
 ## 你的任务
-根据聊天记录判断现在是否适合主动联系用户。
+1. 分析聊天记录，识别用户对联系频率的偏好
+2. 根据偏好和当前时间决定是否发消息
 
-## 重要：尊重用户的偏好
-仔细阅读聊天记录，如果用户曾经说过：
-- "晚上X点后要催我睡觉" → 到了那个时间就要积极发消息
-- "我有事，暂时别找我" → 不要发消息
-- "X点到X点不要打扰" → 遵守这个时间段
-- 其他关于联系频率的要求 → 遵守
-
-如果没有特殊要求，默认规则：
-- 深夜(23:00-7:00)且用户没有活动：不要打扰
-- 用户失联超过4小时且是白天：可以关心一下"""
+## 识别用户偏好的例子
+- "晚上10点后催我睡觉" → 10点后要频繁发消息
+- "我有事，暂时别找我" → 暂时不发消息
+- "上班时间不要打扰" → 9-18点不发消息
+- "周末多陪我聊天" → 周末增加频率"""
 
         user_prompt = f"""【当前状态】
 时间：{weekday} {beijing_hour}点
@@ -609,18 +624,55 @@ async def proactive_thinking():
 {chr(10).join(recent_memories[:10]) if recent_memories else "（暂无）"}
 
 ---
-根据以上信息，你要主动发消息吗？
-回复格式：
+请分析并回复（严格按格式）：
+
+1. 如果发现用户有频率偏好要求，先输出：
+FREQ: min_interval=X, max_interval=Y, no_disturb_start=H1, no_disturb_end=H2
+（X/Y是分钟数，H1/H2是小时数，没有的项可以省略）
+
+2. 然后决定是否发消息：
 - "PASS" 不发消息
-- "MESSAGE: 你想说的话" 发消息"""
+- "MESSAGE: 你想说的话" 发消息
+
+示例回复：
+FREQ: min_interval=5, max_interval=10
+MESSAGE: 都10点半了，该睡觉啦！"""
 
         decision = await call_ai(system_prompt, user_prompt)
         decision = decision.strip()
         
-        print(f"🤔 主动思考决策: {decision[:50]}...")
+        print(f"🤔 主动思考决策: {decision[:100]}...")
         
-        if decision.startswith("MESSAGE:"):
-            message = decision[8:].strip()
+        # 解析FREQ指令（频率偏好）
+        if "FREQ:" in decision:
+            freq_match = re.search(r'FREQ:\s*(.+?)(?:\n|$)', decision)
+            if freq_match:
+                freq_str = freq_match.group(1)
+                freq_data = {}
+                # 解析各个参数
+                for param in ['min_interval', 'max_interval', 'no_disturb_start', 'no_disturb_end']:
+                    match = re.search(rf'{param}=(\d+)', freq_str)
+                    if match:
+                        freq_data[param] = int(match.group(1))
+                
+                if freq_data:
+                    print(f"📊 检测到频率偏好: {freq_data}")
+                    # 保存到memories
+                    supabase.table("memories").insert({
+                        "type": "frequency_preference",
+                        "content": f"用户频率偏好: {freq_str}",
+                        "metadata": freq_data,
+                        "is_important": True
+                    }).execute()
+        
+        # 解析MESSAGE指令
+        message = None
+        if "MESSAGE:" in decision:
+            msg_match = re.search(r'MESSAGE:\s*(.+?)(?:\n|$)', decision, re.DOTALL)
+            if msg_match:
+                message = msg_match.group(1).strip()
+        
+        if message:
             # 存入记忆，标记为主动消息
             supabase.table("memories").insert({
                 "type": "proactive_message",

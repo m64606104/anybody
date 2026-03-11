@@ -481,24 +481,40 @@ ${rolePrompt || '（无特定角色设定）'}
     }
   };
 
+  // 已创建的指令缓存，避免重复执行
+  const createdRemindersRef = useRef<Set<string>>(new Set());
+  const createdExpensesRef = useRef<Set<string>>(new Set());
+  
   // 推送助手消息，如果用户不在该聊天页则加入未读
   const pushAssistantChunkWithUnread = async (chatId: string, content: string) => {
-    // 解析REMINDER指令
+    // 解析REMINDER指令（避免重复创建）
     const reminder = parseReminderFromText(content);
     if (reminder) {
-      console.log('🔔 检测到REMINDER指令:', reminder);
-      createReminder('default_user', reminder.content, reminder.time)
-        .then(() => console.log('✅ 闹钟创建成功'))
-        .catch(e => console.warn('❌ 闹钟创建失败:', e));
+      const reminderKey = `${reminder.time}|${reminder.content}`;
+      if (!createdRemindersRef.current.has(reminderKey)) {
+        console.log('🔔 检测到REMINDER指令:', reminder);
+        createdRemindersRef.current.add(reminderKey);
+        createReminder('default_user', reminder.content, reminder.time)
+          .then(() => console.log('✅ 闹钟创建成功'))
+          .catch(e => console.warn('❌ 闹钟创建失败:', e));
+      } else {
+        console.log('⏭️ 跳过重复的REMINDER指令:', reminderKey);
+      }
     }
     
-    // 解析EXPENSE指令
+    // 解析EXPENSE指令（避免重复记账）
     const expense = parseExpenseFromText(content);
     if (expense) {
-      console.log('💰 检测到EXPENSE指令:', expense);
-      addExpense(expense.amount, expense.category, expense.description)
-        .then(() => console.log('✅ 记账成功'))
-        .catch(e => console.warn('❌ 记账失败:', e));
+      const expenseKey = `${expense.amount}|${expense.category}|${expense.description}`;
+      if (!createdExpensesRef.current.has(expenseKey)) {
+        console.log('💰 检测到EXPENSE指令:', expense);
+        createdExpensesRef.current.add(expenseKey);
+        addExpense(expense.amount, expense.category, expense.description)
+          .then(() => console.log('✅ 记账成功'))
+          .catch(e => console.warn('❌ 记账失败:', e));
+      } else {
+        console.log('⏭️ 跳过重复的EXPENSE指令:', expenseKey);
+      }
     }
     
     // 解析SEARCH指令并执行搜索
