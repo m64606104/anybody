@@ -531,24 +531,43 @@ async def proactive_thinking():
             hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
         
         # 让AI决定是否发消息
-        decision_prompt = f"""你是用户的AI助手。根据以下信息决定是否主动发消息：
+        beijing_hour = (now.hour + 8) % 24
+        weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+        
+        system_prompt = """你是用户的私人AI助手，你们是很熟的朋友关系。
+现在你在考虑要不要主动给用户发消息。
 
-当前时间: {now.strftime('%H:%M')}
-用户失联时长: {hours_since_last_chat:.1f}小时
-最近记忆: {'; '.join(recent_memories[:5]) if recent_memories else '无'}
+## 你的性格
+- 温暖、有趣、偶尔调皮
+- 会关心用户但不会太黏人
+- 说话自然随意，像朋友聊天
 
-规则：
-- 如果是深夜(23:00-7:00)且用户没有活动，不要打扰
-- 如果用户失联超过4小时且是白天，可以关心一下
-- 如果有重要事项需要提醒，应该发消息
-- 大多数情况下应该PASS，不要太频繁打扰
+## 决策规则
+- 深夜(23:00-7:00)：除非有紧急事项，否则不打扰
+- 用户很久没聊天了：可以关心一下，但不要太刻意
+- 有之前聊过的话题可以继续：可以主动提起
+- 大多数情况：PASS，不要太频繁打扰用户
 
-请回复：
-- "PASS" 如果不需要发消息
-- "MESSAGE: [你想说的话]" 如果决定发消息（15-30字）
-- "LOCK" 如果建议用户休息/锁屏"""
+## 如果决定发消息
+- 像朋友一样自然地说话
+- 不要汇报信息，不要太正式
+- 可以：接着之前话题聊、随便闲聊、关心用户、分享想法
+- 简短自然，1-2句话"""
 
-        decision = await call_ai(decision_prompt)
+        user_prompt = f"""【当前状态】
+时间：{weekday} {beijing_hour}点
+用户失联：{hours_since_last_chat:.1f}小时
+
+【最近的聊天记录】
+{chr(10).join(recent_memories[:5]) if recent_memories else "（暂无）"}
+
+---
+你要主动发消息吗？
+回复格式：
+- "PASS" 不发消息
+- "MESSAGE: 你想说的话" 发消息（像朋友聊天一样自然）"""
+
+        decision = await call_ai(system_prompt, user_prompt)
         decision = decision.strip()
         
         print(f"🤔 主动思考决策: {decision[:50]}...")
@@ -938,38 +957,71 @@ async def receive_gps_data(data: GPSData):
     
     # 🎯 触发AI主动消息
     try:
-        # 获取最近的重要记忆
-        recent_memories = supabase.table("memories")\
+        # 获取最近的聊天记录（不只是重要记忆）
+        recent_chats = supabase.table("memories")\
+            .select("content, type, created_at")\
+            .in_("type", ["chat", "proactive_message"])\
+            .order("created_at", desc=True)\
+            .limit(10)\
+            .execute()
+        
+        chat_history = []
+        for m in (recent_chats.data or []):
+            chat_history.append(m["content"][:100])
+        
+        # 获取重要记忆
+        important_memories = supabase.table("memories")\
             .select("content")\
             .eq("is_important", True)\
             .order("created_at", desc=True)\
             .limit(5)\
             .execute()
         
-        memory_context = [m["content"] for m in recent_memories.data] if recent_memories.data else []
+        important_context = [m["content"] for m in important_memories.data] if important_memories.data else []
         
         # 构建上下文
-        hour = datetime.now().hour
-        time_context = "凌晨" if hour < 6 else "早上" if hour < 9 else "上午" if hour < 12 else "中午" if hour < 14 else "下午" if hour < 18 else "晚上" if hour < 22 else "深夜"
+        now = datetime.now()
+        hour = (now.hour + 8) % 24  # 转换为北京时间
+        weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+        time_desc = f"{hour}点" if hour < 12 else f"下午{hour-12}点" if hour < 18 else f"晚上{hour-12}点"
         
         location_info = data.address or f"经纬度({data.latitude:.2f}, {data.longitude:.2f})"
-        battery_info = f"{data.battery}%" if data.battery else "未知"
+        battery_info = data.battery if data.battery else None
         
-        # 让AI生成主动消息
-        system_prompt = """你是用户的AI助手，性格温暖友好。
-当收到用户状态更新时，你要用轻松自然的语气主动跟用户打个招呼。
-不要像汇报工作一样，要像朋友一样自然地搭话。
-回复要简短，1-2句话即可。不要用markdown格式。"""
+        # 让AI自由发挥生成主动消息
+        system_prompt = """你是用户的私人AI助手，你们是很熟的朋友关系。
 
-        user_prompt = f"""用户刚刚给手机充电，系统自动上报了以下信息：
-- 当前时间：{time_context}
-- 位置：{location_info}
-- 电量：{battery_info}
+## 你的性格
+- 温暖、有趣、偶尔调皮
+- 会关心用户但不会太黏人
+- 说话自然随意，像朋友聊天
 
-用户最近的重要记忆：
-{chr(10).join(memory_context) if memory_context else "（暂无）"}
+## 重要规则
+1. 不要像机器人一样汇报信息（"我看到你在xxx，电量xxx"）
+2. 不要机械地问"有什么需要帮助的吗"
+3. 要像朋友一样自然地搭话，可以：
+   - 根据时间关心用户（深夜提醒休息、早上问睡得好吗）
+   - 根据位置猜测用户在干嘛（在外面玩？加班？）
+   - 接着之前的聊天话题继续聊
+   - 随便闲聊，分享一个有趣的想法
+   - 什么都不问，就是打个招呼
+4. 回复要简短自然，1-2句话，不要用markdown格式
+5. 不要每次都提到电量和位置，除非真的有必要（比如电量很低）"""
 
-请根据这些信息，主动跟用户打个招呼或聊几句。"""
+        user_prompt = f"""【背景信息，不要直接复述】
+时间：{weekday} {time_desc}
+位置：{location_info}
+电量：{f'{battery_info}%' if battery_info else '未知'}{' (电量偏低!)' if battery_info and battery_info < 30 else ''}
+
+最近的聊天记录：
+{chr(10).join(chat_history) if chat_history else "（暂无聊天记录）"}
+
+用户的重要记忆：
+{chr(10).join(important_context) if important_context else "（暂无）"}
+
+---
+现在用户刚给手机充电，你想主动跟ta说点什么？
+记住：像朋友一样自然地说话，不要汇报信息，不要太正式。"""
 
         message = await call_ai(system_prompt, user_prompt)
         
