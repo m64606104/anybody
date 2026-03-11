@@ -493,26 +493,18 @@ ${rolePrompt || '（无特定角色设定）'}
       
       let segments: string[] = [];
       try {
-        // 尝试提取第一个完整的JSON对象
-        const jsonMatch = rawContent.match(/\{[\s\S]*?"segments"\s*:\s*\[[\s\S]*?\]\s*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (parsed?.segments && Array.isArray(parsed.segments)) {
-            segments = parsed.segments.map((s: any) => String(s));
-          }
+        const parsed = JSON.parse(rawContent);
+        if (parsed?.segments && Array.isArray(parsed.segments)) {
+          segments = parsed.segments.map((s: any) => String(s));
         }
       } catch (e) {
-        console.warn('JSON解析失败:', e);
+        // ignore JSON parse error, fallback below
       }
 
       if (!segments.length) {
         const text = rawContent || data?.choices?.[0]?.message?.content || '';
-        // 尝试移除混乱的JSON片段
-        const cleanText = text.replace(/\{"segments":[\s\S]*?\]\}/g, '').trim();
         const sep = chatSettings.chunkSeparator || '<|chunk|>';
-        segments = cleanText.split(sep).filter(Boolean);
-        if (!segments.length && cleanText) segments = [cleanText];
-        // 如果还是没有，用原文
+        segments = text.split(sep).filter(Boolean);
         if (!segments.length && text) segments = [text];
       }
       
