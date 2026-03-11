@@ -405,38 +405,24 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
-    // 获取当前时间
-    const now = new Date();
-    const timeStr = now.toLocaleString('zh-CN', { 
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit',
-      weekday: 'long'
-    });
-
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
 
-## 当前时间
-${timeStr}
-
 ## 你的能力
-1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆和截屏数据
+1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆
 2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
 3. **日历事件**：你可以帮用户创建日程安排
 4. **记账**：你可以帮用户记录支出
 5. **联网搜索**：你可以搜索网络获取最新信息
 6. **查询记忆**：你可以搜索用户的历史记忆
-7. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容（下面会提供）
+7. **主动消息**：当用户充电时，系统会自动触发你主动发消息
+8. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
 
-## 特殊指令格式
-这些指令会被系统自动执行，**指令本身会被隐藏，用户看不到**。你可以自由使用。
+## 特殊指令格式（在回复中使用，系统会自动执行）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
 - 记账：[EXPENSE:50|food|午餐]
 - 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
-
-**注意：指令会被自动移除，用户只会看到你的自然语言回复。所以不要在回复中提及"我正在搜索"之类的话，直接给出结果即可。**
 ${memoryContext}
 ${screenCaptureContext}
 ${userStatusContext}
@@ -446,6 +432,7 @@ ${rolePrompt || '（无特定角色设定）'}
 
 ## 回复格式
 请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
+如果需要执行指令，把指令放在segments的某一段中。
 若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
     const apiMessages = [
@@ -473,7 +460,7 @@ ${rolePrompt || '（无特定角色设定）'}
         body: JSON.stringify({
           model: apiSettings.model,
           messages: apiMessages,
-          // 移除response_format，避免某些模型重复输出
+          response_format: { type: 'json_object' },
         }),
       });
 
@@ -1557,38 +1544,23 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar space-y-3 pb-4 min-h-0">
-        {currentMessages.map((m, idx) => {
-          // 计算是否需要显示时间分隔
-          const msgTime = new Date(m.createdAt);
-          const prevMsg = idx > 0 ? currentMessages[idx - 1] : null;
-          const prevTime = prevMsg ? new Date(prevMsg.createdAt) : null;
-          const showTimeSeparator = !prevTime || (msgTime.getTime() - prevTime.getTime() > 5 * 60 * 1000); // 超过5分钟显示时间
-          
-          return (
-            <div key={m.id}>
-              {showTimeSeparator && (
-                <div className="text-center text-xs text-slate-400 my-2">
-                  {msgTime.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                </div>
-              )}
-              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
-                {deleteMode && (
-                  <input
-                    type="checkbox"
-                    checked={selectedMessages.has(m.id)}
-                    onChange={() => toggleMessageSelection(m.id)}
-                    className="w-4 h-4 cursor-pointer"
-                  />
-                )}
-                <div 
-                  className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
-                  onClick={() => deleteMode && toggleMessageSelection(m.id)}
-                  dangerouslySetInnerHTML={{ __html: m.content }}
-                />
-              </div>
-            </div>
-          );
-        })}
+        {currentMessages.map((m) => (
+          <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
+            {deleteMode && (
+              <input
+                type="checkbox"
+                checked={selectedMessages.has(m.id)}
+                onChange={() => toggleMessageSelection(m.id)}
+                className="w-4 h-4 cursor-pointer"
+              />
+            )}
+            <div 
+              className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+              onClick={() => deleteMode && toggleMessageSelection(m.id)}
+              dangerouslySetInnerHTML={{ __html: m.content }}
+            />
+          </div>
+        ))}
         <div ref={messagesEndRef} />
       </div>
       <div className="card glass p-3 flex items-center gap-2">

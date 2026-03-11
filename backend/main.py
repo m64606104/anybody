@@ -374,11 +374,11 @@ async def get_user_status():
 # ============ 闹钟功能 ============
 @app.post("/reminder/create")
 async def create_reminder(reminder: ReminderCreate):
-    """创建闹钟（自动去重：同一时间不重复创建）"""
+    """创建闹钟（自动去重：相同时间±5分钟内不重复创建）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 检查是否已存在相同时间的闹钟（前后5分钟内视为相同）
+    # 检查是否已存在相同时间（±5分钟）的闹钟
     remind_time = reminder.remind_at
     time_start = (remind_time - timedelta(minutes=5)).isoformat()
     time_end = (remind_time + timedelta(minutes=5)).isoformat()
@@ -393,7 +393,7 @@ async def create_reminder(reminder: ReminderCreate):
     
     if existing.data:
         # 已存在相同时间的闹钟，跳过创建
-        print(f"⏭️ 跳过重复闹钟: {reminder.remind_at} 已存在 {existing.data[0]['content']}")
+        print(f"⏭️ 跳过重复闹钟: {reminder.content} @ {reminder.remind_at} (已存在: {existing.data[0]['content']})")
         return {"success": True, "id": existing.data[0]["id"], "skipped": True, "reason": "已存在相同时间的闹钟"}
     
     data = {
@@ -406,6 +406,7 @@ async def create_reminder(reminder: ReminderCreate):
     }
     
     result = supabase.table("reminders").insert(data).execute()
+    print(f"✅ 创建闹钟: {reminder.content} @ {reminder.remind_at}")
     return {"success": True, "id": result.data[0]["id"] if result.data else None}
 
 @app.get("/reminder/list/{user_id}")
