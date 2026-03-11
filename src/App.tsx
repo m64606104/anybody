@@ -360,25 +360,31 @@ const App: React.FC = () => {
     
     try {
       // 按类型分别获取记忆（避免互相挤掉）
-      const memoriesResult = await getMemoriesByTypes(5, 3, 2);
+      // 聊天记录用本地的（更完整），截屏和GPS从Supabase获取
+      const memoriesResult = await getMemoriesByTypes(20, 50, 10);
       
-      // 聊天记录
-      if (memoriesResult.chats?.length) {
-        const chatList = memoriesResult.chats
-          .map(m => `- ${m.content.slice(0, 100)}`)
-          .join('\n');
-        memoryContext = `\n## 最近的聊天记录（来自记忆库）\n${chatList}`;
-      }
-      
-      // 截屏数据（微信、美团、小红书、咸鱼等）
+      // 截屏数据（微信、美团、小红书、咸鱼等）- 这是关键数据，从Supabase获取
       if (memoriesResult.screen_captures?.length) {
         const captureList = memoriesResult.screen_captures
           .map(m => {
             const app = m.metadata?.app || '未知应用';
-            return `- [${app}] ${m.content.slice(0, 300)}`;
+            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
+            return `- [${app} ${time}] ${m.content.slice(0, 500)}`;
           })
           .join('\n');
-        screenCaptureContext = `\n## 用户最近的应用截屏内容（你可以看到用户在其他应用的活动，如课表、聊天等）\n${captureList}`;
+        screenCaptureContext = `\n## 用户最近的应用截屏内容（你可以看到用户在微信、美团、小红书、咸鱼等应用的活动，如课表、聊天、订单等）\n${captureList}`;
+      }
+      
+      // GPS数据
+      if (memoriesResult.gps?.length) {
+        const gpsList = memoriesResult.gps
+          .map(m => {
+            const addr = m.metadata?.address || '未知位置';
+            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
+            return `- [${time}] ${addr}`;
+          })
+          .join('\n');
+        memoryContext += `\n## 用户最近的位置记录\n${gpsList}`;
       }
       
       // 获取用户状态（位置、电量等）

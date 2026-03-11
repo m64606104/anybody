@@ -281,14 +281,17 @@ async def get_recent_memories(limit: int = 10):
     return {"memories": result.data}
 
 @app.get("/memory/by_types")
-async def get_memories_by_types(chat_limit: int = 5, capture_limit: int = 3, gps_limit: int = 2):
-    """按类型分别获取记忆，避免互相挤掉"""
+async def get_memories_by_types(chat_limit: int = 20, capture_limit: int = 50, gps_limit: int = 10):
+    """按类型分别获取记忆，避免互相挤掉
+    
+    默认值：聊天20条（本地有完整的，这里只是补充）、截屏50条、GPS10条
+    """
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     result = {}
     
-    # 获取最近聊天记录
+    # 获取最近聊天记录（本地有完整的，这里只是补充跨设备同步的）
     chat_result = supabase.table("memories")\
         .select("*")\
         .eq("type", "chat")\
@@ -297,7 +300,7 @@ async def get_memories_by_types(chat_limit: int = 5, capture_limit: int = 3, gps
         .execute()
     result["chats"] = chat_result.data or []
     
-    # 获取最近截屏数据
+    # 获取最近截屏数据（微信、美团、小红书、咸鱼等）
     capture_result = supabase.table("memories")\
         .select("*")\
         .eq("type", "screen_capture")\
