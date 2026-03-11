@@ -156,6 +156,7 @@ const App: React.FC = () => {
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showAssistantChat, setShowAssistantChat] = useState(false); // 流体球小聊天窗口
   const [assistantInput, setAssistantInput] = useState(''); // 助手聊天输入
+  const [isTyping, setIsTyping] = useState(false); // AI正在输入中
   const [assistantBubbles, setAssistantBubbles] = useState<{id: string; content: string; createdAt: number}[]>([]); // 主动消息气泡
   const [unreadMessages, setUnreadMessages] = useState<Record<string, Message[]>>({}); // 未读消息 {chatId: messages[]}
   const [showUnreadPreview, setShowUnreadPreview] = useState(false); // 是否展开未读消息预览
@@ -339,6 +340,7 @@ const App: React.FC = () => {
     console.log('  历史记录数量:', history.length);
     console.log('  历史记录:', history.map(m => ({ role: m.role, content: m.content.slice(0, 50) + '...' })));
     
+    setIsTyping(true);
     void callModelForChat(chatId, history);
   };
 
@@ -346,6 +348,7 @@ const App: React.FC = () => {
   const callModelForChat = async (chatId: string, history: Message[]) => {
     if (!apiSettings.apiKey || !apiSettings.model || !apiSettings.baseUrl) {
       pushAssistantChunkWithUnread(chatId, '请先在设置页配置 Base URL、API Key 和模型');
+      setIsTyping(false);
       return;
     }
 
@@ -495,12 +498,16 @@ ${rolePrompt || '（无特定角色设定）'}
       console.log('  解析后segments:', segments);
 
       let delay = 200;
+      const totalDelay = delay + segments.length * chatSettings.chunkIntervalMs;
       segments.forEach((chunk) => {
         window.setTimeout(() => pushAssistantChunkWithUnread(chatId, chunk), delay);
         delay += chatSettings.chunkIntervalMs;
       });
+      // 所有消息发送完后关闭输入动画
+      window.setTimeout(() => setIsTyping(false), totalDelay);
     } catch (e: any) {
       pushAssistantChunkWithUnread(chatId, `调用异常：${e?.message || e}`);
+      setIsTyping(false);
     }
   };
 
@@ -573,31 +580,16 @@ ${rolePrompt || '（无特定角色设定）'}
         .catch(e => console.warn('❌ 日历事件创建失败:', e));
     }
     
-    // 解析QUERY指令并搜索记忆
+    // 解析QUERY指令并搜索记忆（只在控制台打印，不单独显示消息）
     const queryKeyword = parseQueryFromText(content);
     if (queryKeyword) {
       console.log('🧠 检测到QUERY指令:', queryKeyword);
       try {
-        const queryResult = await searchMemory(queryKeyword, 5);
+        const queryResult = await searchMemory(queryKeyword, 10);
         if (queryResult.memories?.length) {
-          const memorySummary = queryResult.memories
-            .map((m, i) => `${i + 1}. [${m.type}] ${m.content.slice(0, 100)}`)
-            .join('\n');
-          const queryMessage: Message = { 
-            id: uuid(), 
-            role: 'assistant', 
-            content: `🧠 记忆搜索结果:\n${memorySummary}`, 
-            createdAt: Date.now() 
-          };
-          updateMessages(chatId, (prev) => [...prev, queryMessage]);
+          console.log('🧠 搜索结果:', queryResult.memories.map(m => m.content.slice(0, 50)));
         } else {
-          const noResultMessage: Message = { 
-            id: uuid(), 
-            role: 'assistant', 
-            content: `🧠 没有找到与"${queryKeyword}"相关的记忆`, 
-            createdAt: Date.now() 
-          };
-          updateMessages(chatId, (prev) => [...prev, noResultMessage]);
+          console.log('🧠 没有找到相关记忆');
         }
       } catch (e) {
         console.warn('❌ 记忆搜索失败:', e);
@@ -1517,7 +1509,17 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
       <div className="flex items-center justify-between mb-3">
         <div>
           <div className="text-xs text-slate-600">私聊</div>
-          <div className="text-lg font-semibold text-slate-800">{currentChat?.title}</div>
+          <div className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+            {currentChat?.title}
+            {isTyping && (
+              <span className="flex items-center gap-1 text-xs text-slate-500 font-normal">
+                <span className="animate-pulse">●</span>
+                <span className="animate-pulse" style={{ animationDelay: '0.2s' }}>●</span>
+                <span className="animate-pulse" style={{ animationDelay: '0.4s' }}>●</span>
+                <span className="ml-1">正在输入</span>
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex gap-2">
           {deleteMode ? (
