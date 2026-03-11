@@ -150,8 +150,8 @@ async def call_ai(system_prompt: str, user_message: str = "") -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
-def get_butler_role_persona() -> Optional[str]:
-    """从云端同步数据中获取管家角色的人设"""
+def get_butler_role() -> Optional[dict]:
+    """从云端同步数据中获取管家角色（完整信息）"""
     if not supabase:
         return None
     
@@ -164,25 +164,40 @@ def get_butler_role_persona() -> Optional[str]:
         
         if result.data and result.data[0].get("roles"):
             roles = result.data[0]["roles"]
-            # 找到isHomeAssistant为true的角色
             for role in roles:
                 if role.get("isHomeAssistant"):
-                    # 构建完整人设
-                    persona_parts = []
-                    if role.get("persona"):
-                        persona_parts.append(role["persona"])
-                    if role.get("traits"):
-                        persona_parts.append(f"性格特点：{role['traits']}")
-                    if role.get("tone"):
-                        persona_parts.append(f"说话风格：{role['tone']}")
-                    if role.get("memory"):
-                        persona_parts.append(f"背景记忆：{role['memory']}")
-                    
-                    return "\n".join(persona_parts) if persona_parts else None
+                    return role  # 返回完整角色信息
         return None
     except Exception as e:
         print(f"⚠️ 获取管家角色失败: {e}")
         return None
+
+def build_butler_persona(role: dict) -> str:
+    """根据角色信息构建人设描述，如果没有人设则返回角色名"""
+    if not role:
+        return ""
+    
+    persona_parts = []
+    
+    # 角色名称
+    if role.get("name"):
+        persona_parts.append(f"你是{role['name']}")
+    
+    # 人设描述
+    if role.get("persona"):
+        persona_parts.append(role["persona"])
+    if role.get("traits"):
+        persona_parts.append(f"性格特点：{role['traits']}")
+    if role.get("tone"):
+        persona_parts.append(f"说话风格：{role['tone']}")
+    if role.get("memory"):
+        persona_parts.append(f"背景记忆：{role['memory']}")
+    
+    # 如果什么都没填，至少返回角色名或默认描述
+    if not persona_parts:
+        return "你是用户的AI助手"
+    
+    return "\n".join(persona_parts)
 
 # ============ 生命周期 ============
 @asynccontextmanager
@@ -358,10 +373,10 @@ async def generate_proactive_message(req: ProactiveMessageRequest):
     # 使用传入的角色人设，如果没有则从云端获取管家角色
     persona = req.role_persona
     if not persona:
-        persona = get_butler_role_persona()
-    
-    if not persona:
-        return {"message": ""}  # 没有角色人设，不生成消息
+        butler_role = get_butler_role()
+        if not butler_role:
+            return {"message": ""}  # 没有设置管家角色
+        persona = build_butler_persona(butler_role)
     
     system_prompt = f"""{persona}
 
@@ -557,12 +572,14 @@ async def proactive_thinking():
             hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
         
         # 获取管家角色人设
-        butler_persona = get_butler_role_persona()
-        if not butler_persona:
+        butler_role = get_butler_role()
+        if not butler_role:
             print("⚠️ 未设置管家角色，跳过主动思考")
             return
         
-        # 让AI决定是否发消息
+        butler_persona = build_butler_persona(butler_role)
+        
+        # 让AI决定是否发消息（根据聊天记录中用户的偏好来决定）
         beijing_hour = (now.hour + 8) % 24
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         
@@ -570,21 +587,29 @@ async def proactive_thinking():
 
 （以上是你的角色设定，请完全按照设定来说话和行动）
 
-## 决策规则
+## 你的任务
+根据聊天记录判断现在是否适合主动联系用户。
+
+## 重要：尊重用户的偏好
+仔细阅读聊天记录，如果用户曾经说过：
+- "晚上X点后要催我睡觉" → 到了那个时间就要积极发消息
+- "我有事，暂时别找我" → 不要发消息
+- "X点到X点不要打扰" → 遵守这个时间段
+- 其他关于联系频率的要求 → 遵守
+
+如果没有特殊要求，默认规则：
 - 深夜(23:00-7:00)且用户没有活动：不要打扰
-- 用户失联超过4小时且是白天：可以关心一下
-- 有之前聊过的话题可以继续：可以主动提起
-- 大多数情况：PASS，不要太频繁打扰用户"""
+- 用户失联超过4小时且是白天：可以关心一下"""
 
         user_prompt = f"""【当前状态】
 时间：{weekday} {beijing_hour}点
 用户失联：{hours_since_last_chat:.1f}小时
 
 【最近的聊天记录】
-{chr(10).join(recent_memories[:5]) if recent_memories else "（暂无）"}
+{chr(10).join(recent_memories[:10]) if recent_memories else "（暂无）"}
 
 ---
-你要主动发消息吗？
+根据以上信息，你要主动发消息吗？
 回复格式：
 - "PASS" 不发消息
 - "MESSAGE: 你想说的话" 发消息"""
@@ -969,11 +994,13 @@ async def receive_gps_data(data: GPSData):
     
     # 🎯 触发AI主动消息
     try:
-        # 获取管家角色人设
-        butler_persona = get_butler_role_persona()
-        if not butler_persona:
+        # 获取管家角色
+        butler_role = get_butler_role()
+        if not butler_role:
             print("⚠️ 未设置管家角色，跳过主动消息")
             return {"success": True, "id": result.data[0]["id"] if result.data else None}
+        
+        butler_persona = build_butler_persona(butler_role)
         
         # 获取最近的聊天记录
         recent_chats = supabase.table("memories")\
