@@ -210,6 +210,48 @@ async def search_memory(search: MemorySearch):
     
     return {"memories": result.data}
 
+@app.get("/memory/recent")
+async def get_recent_memories(limit: int = 10):
+    """获取最近的记忆（用于注入AI上下文）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .limit(limit)\
+        .execute()
+    
+    return {"memories": result.data}
+
+@app.get("/api/user/status")
+async def get_user_status():
+    """获取用户最新状态（位置、电量等）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 获取最新GPS记录
+    gps_result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "gps_history")\
+        .order("created_at", desc=True)\
+        .limit(1)\
+        .execute()
+    
+    status = {}
+    if gps_result.data:
+        meta = gps_result.data[0].get("metadata", {})
+        status["location"] = {
+            "latitude": meta.get("latitude"),
+            "longitude": meta.get("longitude"),
+            "address": meta.get("address")
+        }
+        status["battery"] = meta.get("battery")
+        status["last_app"] = meta.get("app")
+        status["last_active"] = gps_result.data[0].get("created_at")
+    
+    return status
+
 # ============ 闹钟功能 ============
 @app.post("/reminder/create")
 async def create_reminder(reminder: ReminderCreate):
@@ -804,7 +846,7 @@ async def receive_wechat_data(data: WechatData):
 
 @app.post("/api/gps")
 async def receive_gps_data(data: GPSData):
-    """接收iOS快捷指令发送的位置数据"""
+    """接收iOS快捷指令发送的位置数据，并触发AI主动消息"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
@@ -827,6 +869,61 @@ async def receive_gps_data(data: GPSData):
     }
     
     result = supabase.table("memories").insert(gps_data).execute()
+    
+    # 🎯 触发AI主动消息
+    try:
+        # 获取最近的重要记忆
+        recent_memories = supabase.table("memories")\
+            .select("content")\
+            .eq("is_important", True)\
+            .order("created_at", desc=True)\
+            .limit(5)\
+            .execute()
+        
+        memory_context = [m["content"] for m in recent_memories.data] if recent_memories.data else []
+        
+        # 构建上下文
+        hour = datetime.now().hour
+        time_context = "凌晨" if hour < 6 else "早上" if hour < 9 else "上午" if hour < 12 else "中午" if hour < 14 else "下午" if hour < 18 else "晚上" if hour < 22 else "深夜"
+        
+        location_info = data.address or f"经纬度({data.latitude:.2f}, {data.longitude:.2f})"
+        battery_info = f"{data.battery}%" if data.battery else "未知"
+        
+        # 让AI生成主动消息
+        prompt = f"""你是用户的AI助手。用户刚刚给手机充电，系统自动上报了以下信息：
+- 当前时间：{time_context}
+- 位置：{location_info}
+- 电量：{battery_info}
+
+用户最近的重要记忆：
+{chr(10).join(memory_context) if memory_context else "（暂无）"}
+
+请根据这些信息，用轻松自然的语气主动跟用户打个招呼或聊几句。
+不要像汇报工作一样，要像朋友一样自然地搭话。
+可以关心一下用户，或者根据位置/时间提出一些建议。
+回复要简短，1-2句话即可。"""
+
+        message = await call_ai(prompt)
+        
+        if message and BARK_KEY:
+            # 通过Bark推送到手机
+            async with httpx.AsyncClient() as client:
+                bark_url = f"https://api.day.app/{BARK_KEY}/AI助手/{quote(message)}?sound=shake&isArchive=1"
+                await client.get(bark_url, timeout=10.0)
+                print(f"📤 已推送主动消息: {message[:50]}...")
+        
+        # 同时存入memories
+        if message:
+            supabase.table("memories").insert({
+                "type": "proactive_message",
+                "content": message,
+                "metadata": {"trigger": "gps_upload", "location": location_info},
+                "is_important": False
+            }).execute()
+            
+    except Exception as e:
+        print(f"⚠️ 生成主动消息失败: {e}")
+    
     return {"success": True, "id": result.data[0]["id"] if result.data else None}
 
 @app.get("/api/gps/latest")

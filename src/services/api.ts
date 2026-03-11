@@ -74,6 +74,29 @@ export async function searchMemory(
 }
 
 /**
+ * 获取最近记忆（用于注入AI上下文）
+ */
+export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[] }> {
+  const resp = await fetch(`${API_BASE_URL}/memory/recent?limit=${limit}`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取用户状态（最新位置、电量等）
+ */
+export async function getUserStatus(): Promise<{
+  location?: { latitude: number; longitude: number; address?: string };
+  battery?: number;
+  last_app?: string;
+  last_active?: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/api/user/status`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
  * 创建闹钟
  */
 export async function createReminder(
@@ -377,6 +400,22 @@ export function parseEventFromText(text: string): { time: Date; title: string; d
  */
 export function removeEventFromText(text: string): string {
   return text.replace(/\[EVENT:[^\]]+\]/g, '').trim();
+}
+
+/**
+ * 解析AI回复中的QUERY指令
+ * 格式: [QUERY:关键词]
+ */
+export function parseQueryFromText(text: string): string | null {
+  const match = text.match(/\[QUERY:([^\]]+)\]/);
+  return match ? match[1] : null;
+}
+
+/**
+ * 从文本中移除QUERY指令
+ */
+export function removeQueryFromText(text: string): string {
+  return text.replace(/\[QUERY:[^\]]+\]/g, '').trim();
 }
 
 /**

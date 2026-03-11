@@ -13,7 +13,12 @@ import {
   removeSearchFromText,
   createCalendarEvent,
   parseEventFromText,
-  removeEventFromText
+  removeEventFromText,
+  getRecentMemories,
+  getUserStatus,
+  searchMemory,
+  parseQueryFromText,
+  removeQueryFromText
 } from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
@@ -280,21 +285,54 @@ const App: React.FC = () => {
     const role = roles.find((r) => r.id === chat?.roleId);
     const rolePrompt = buildRolePrompt(role);
 
+    // 🔄 自动查询最近记忆和用户状态，注入到AI上下文
+    let memoryContext = '';
+    let userStatusContext = '';
+    
+    try {
+      // 获取最近5条记忆
+      const memoriesResult = await getRecentMemories(5);
+      if (memoriesResult.memories?.length) {
+        const memoryList = memoriesResult.memories
+          .map(m => `- [${m.type}] ${m.content.slice(0, 100)}`)
+          .join('\n');
+        memoryContext = `\n## 最近的记忆（来自Supabase）\n${memoryList}`;
+      }
+      
+      // 获取用户状态（位置、电量等）
+      const status = await getUserStatus();
+      if (status.location || status.battery) {
+        const parts = [];
+        if (status.location?.address) parts.push(`位置: ${status.location.address}`);
+        if (status.battery) parts.push(`电量: ${status.battery}%`);
+        if (status.last_active) parts.push(`最后活跃: ${new Date(status.last_active).toLocaleString('zh-CN')}`);
+        if (parts.length) {
+          userStatusContext = `\n## 用户当前状态\n${parts.join(' | ')}`;
+        }
+      }
+    } catch (e) {
+      console.warn('获取记忆/状态失败:', e);
+    }
+
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
 
 ## 你的能力
-1. **记忆能力**：你的所有对话都会自动存入记忆库，你可以记住用户说过的事情
+1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆
 2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
 3. **日历事件**：你可以帮用户创建日程安排
 4. **记账**：你可以帮用户记录支出
 5. **联网搜索**：你可以搜索网络获取最新信息
-6. **主动消息**：后台会定期检查，在合适的时候主动给用户发消息
+6. **查询记忆**：你可以搜索用户的历史记忆
+7. **主动消息**：当用户充电时，系统会自动触发你主动发消息
 
 ## 特殊指令格式（在回复中使用，系统会自动执行）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
 - 记账：[EXPENSE:50|food|午餐]
-- 搜索：[SEARCH:查询内容]
+- 搜索网络：[SEARCH:查询内容]
+- 查询记忆：[QUERY:关键词]
+${memoryContext}
+${userStatusContext}
 
 ## 角色设定
 ${rolePrompt || '（无特定角色设定）'}
@@ -429,11 +467,43 @@ ${rolePrompt || '（无特定角色设定）'}
         .catch(e => console.warn('❌ 日历事件创建失败:', e));
     }
     
+    // 解析QUERY指令并搜索记忆
+    const queryKeyword = parseQueryFromText(content);
+    if (queryKeyword) {
+      console.log('🧠 检测到QUERY指令:', queryKeyword);
+      try {
+        const queryResult = await searchMemory(queryKeyword, 5);
+        if (queryResult.memories?.length) {
+          const memorySummary = queryResult.memories
+            .map((m, i) => `${i + 1}. [${m.type}] ${m.content.slice(0, 100)}`)
+            .join('\n');
+          const queryMessage: Message = { 
+            id: uuid(), 
+            role: 'assistant', 
+            content: `🧠 记忆搜索结果:\n${memorySummary}`, 
+            createdAt: Date.now() 
+          };
+          updateMessages(chatId, (prev) => [...prev, queryMessage]);
+        } else {
+          const noResultMessage: Message = { 
+            id: uuid(), 
+            role: 'assistant', 
+            content: `🧠 没有找到与"${queryKeyword}"相关的记忆`, 
+            createdAt: Date.now() 
+          };
+          updateMessages(chatId, (prev) => [...prev, noResultMessage]);
+        }
+      } catch (e) {
+        console.warn('❌ 记忆搜索失败:', e);
+      }
+    }
+    
     // 移除所有指令后的干净文本
     let cleanContent = removeReminderFromText(content);
     cleanContent = removeExpenseFromText(cleanContent);
     cleanContent = removeSearchFromText(cleanContent);
     cleanContent = removeEventFromText(cleanContent);
+    cleanContent = removeQueryFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
