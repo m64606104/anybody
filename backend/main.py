@@ -1057,26 +1057,32 @@ async def load_sync_data():
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    result = supabase.table("user_sync")\
-        .select("*")\
-        .eq("user_id", USER_ID)\
-        .single()\
-        .execute()
-    
-    if result.data:
-        return {
-            "found": True,
-            "data": {
-                "chats": result.data.get("chats", []),
-                "messages": result.data.get("messages", {}),
-                "roles": result.data.get("roles", []),
-                "api_settings": result.data.get("api_settings", {}),
-                "chat_settings": result.data.get("chat_settings", {}),
-                "user_profile": result.data.get("user_profile", {}),
-                "updated_at": result.data.get("updated_at")
+    try:
+        # 不用single()，用limit(1)避免无数据时报错
+        result = supabase.table("user_sync")\
+            .select("*")\
+            .eq("user_id", USER_ID)\
+            .limit(1)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            data = result.data[0]
+            return {
+                "found": True,
+                "data": {
+                    "chats": data.get("chats", []),
+                    "messages": data.get("messages", {}),
+                    "roles": data.get("roles", []),
+                    "api_settings": data.get("api_settings", {}),
+                    "chat_settings": data.get("chat_settings", {}),
+                    "user_profile": data.get("user_profile", {}),
+                    "updated_at": data.get("updated_at")
+                }
             }
-        }
-    return {"found": False}
+        return {"found": False}
+    except Exception as e:
+        print(f"⚠️ 加载同步数据失败: {e}")
+        return {"found": False, "error": str(e)}
 
 @app.post("/sync/save")
 async def save_sync_data(data: SyncData):
@@ -1110,28 +1116,32 @@ async def sync_single_message(chat_id: str, message: dict):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 获取当前数据
-    result = supabase.table("user_sync")\
-        .select("messages")\
-        .eq("user_id", USER_ID)\
-        .single()\
-        .execute()
-    
-    messages = result.data.get("messages", {}) if result.data else {}
-    
-    # 添加新消息
-    if chat_id not in messages:
-        messages[chat_id] = []
-    messages[chat_id].append(message)
-    
-    # 更新
-    supabase.table("user_sync").upsert({
-        "user_id": USER_ID,
-        "messages": messages,
-        "updated_at": datetime.utcnow().isoformat()
-    }, on_conflict="user_id").execute()
-    
-    return {"success": True}
+    try:
+        # 获取当前数据
+        result = supabase.table("user_sync")\
+            .select("messages")\
+            .eq("user_id", USER_ID)\
+            .limit(1)\
+            .execute()
+        
+        messages = result.data[0].get("messages", {}) if result.data else {}
+        
+        # 添加新消息
+        if chat_id not in messages:
+            messages[chat_id] = []
+        messages[chat_id].append(message)
+        
+        # 更新
+        supabase.table("user_sync").upsert({
+            "user_id": USER_ID,
+            "messages": messages,
+            "updated_at": datetime.utcnow().isoformat()
+        }, on_conflict="user_id").execute()
+        
+        return {"success": True}
+    except Exception as e:
+        print(f"⚠️ 同步消息失败: {e}")
+        return {"success": False, "error": str(e)}
 
 # ============ 健康检查 ============
 @app.get("/health")
