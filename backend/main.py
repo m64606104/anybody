@@ -280,6 +280,29 @@ async def get_recent_memories(limit: int = 10):
     
     return {"memories": result.data}
 
+class MemoryDelete(BaseModel):
+    content: str
+
+@app.post("/memory/delete")
+async def delete_memory(req: MemoryDelete):
+    """根据内容删除记忆"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 先查找匹配的记录
+    result = supabase.table("memories")\
+        .select("id")\
+        .eq("content", req.content)\
+        .execute()
+    
+    deleted_count = 0
+    if result.data:
+        for item in result.data:
+            supabase.table("memories").delete().eq("id", item["id"]).execute()
+            deleted_count += 1
+    
+    return {"success": True, "deleted_count": deleted_count}
+
 @app.get("/api/user/status")
 async def get_user_status():
     """获取用户最新状态（位置、电量等）"""

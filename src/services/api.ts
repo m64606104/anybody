@@ -83,6 +83,19 @@ export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[
 }
 
 /**
+ * 删除记忆（根据内容匹配删除）
+ */
+export async function deleteMemoryByContent(content: string): Promise<{ success: boolean; deleted_count?: number }> {
+  const resp = await fetch(`${API_BASE_URL}/memory/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
  * 获取用户状态（最新位置、电量等）
  */
 export async function getUserStatus(): Promise<{
