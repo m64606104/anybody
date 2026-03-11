@@ -405,7 +405,19 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
+    // 获取当前时间
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-CN', { 
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+      weekday: 'long'
+    });
+
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 当前时间
+${timeStr}
 
 ## 你的能力
 1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆和截屏数据
@@ -481,18 +493,26 @@ ${rolePrompt || '（无特定角色设定）'}
       
       let segments: string[] = [];
       try {
-        const parsed = JSON.parse(rawContent);
-        if (parsed?.segments && Array.isArray(parsed.segments)) {
-          segments = parsed.segments.map((s: any) => String(s));
+        // 尝试提取第一个完整的JSON对象
+        const jsonMatch = rawContent.match(/\{[\s\S]*?"segments"\s*:\s*\[[\s\S]*?\]\s*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed?.segments && Array.isArray(parsed.segments)) {
+            segments = parsed.segments.map((s: any) => String(s));
+          }
         }
       } catch (e) {
-        // ignore JSON parse error, fallback below
+        console.warn('JSON解析失败:', e);
       }
 
       if (!segments.length) {
         const text = rawContent || data?.choices?.[0]?.message?.content || '';
+        // 尝试移除混乱的JSON片段
+        const cleanText = text.replace(/\{"segments":[\s\S]*?\]\}/g, '').trim();
         const sep = chatSettings.chunkSeparator || '<|chunk|>';
-        segments = text.split(sep).filter(Boolean);
+        segments = cleanText.split(sep).filter(Boolean);
+        if (!segments.length && cleanText) segments = [cleanText];
+        // 如果还是没有，用原文
         if (!segments.length && text) segments = [text];
       }
       
@@ -1545,23 +1565,38 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar space-y-3 pb-4 min-h-0">
-        {currentMessages.map((m) => (
-          <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
-            {deleteMode && (
-              <input
-                type="checkbox"
-                checked={selectedMessages.has(m.id)}
-                onChange={() => toggleMessageSelection(m.id)}
-                className="w-4 h-4 cursor-pointer"
-              />
-            )}
-            <div 
-              className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
-              onClick={() => deleteMode && toggleMessageSelection(m.id)}
-              dangerouslySetInnerHTML={{ __html: m.content }}
-            />
-          </div>
-        ))}
+        {currentMessages.map((m, idx) => {
+          // 计算是否需要显示时间分隔
+          const msgTime = new Date(m.createdAt);
+          const prevMsg = idx > 0 ? currentMessages[idx - 1] : null;
+          const prevTime = prevMsg ? new Date(prevMsg.createdAt) : null;
+          const showTimeSeparator = !prevTime || (msgTime.getTime() - prevTime.getTime() > 5 * 60 * 1000); // 超过5分钟显示时间
+          
+          return (
+            <div key={m.id}>
+              {showTimeSeparator && (
+                <div className="text-center text-xs text-slate-400 my-2">
+                  {msgTime.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              )}
+              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
+                {deleteMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedMessages.has(m.id)}
+                    onChange={() => toggleMessageSelection(m.id)}
+                    className="w-4 h-4 cursor-pointer"
+                  />
+                )}
+                <div 
+                  className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+                  onClick={() => deleteMode && toggleMessageSelection(m.id)}
+                  dangerouslySetInnerHTML={{ __html: m.content }}
+                />
+              </div>
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
       <div className="card glass p-3 flex items-center gap-2">
