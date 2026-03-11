@@ -317,46 +317,43 @@ async def delete_reminder(reminder_id: str):
 @app.post("/proactive/generate")
 async def generate_proactive_message(req: ProactiveMessageRequest):
     """生成主动消息"""
-    hour = datetime.now().hour
-    time_context = ""
-    if hour < 6:
-        time_context = "现在是凌晨"
-    elif hour < 9:
-        time_context = "现在是早上"
-    elif hour < 12:
-        time_context = "现在是上午"
-    elif hour < 14:
-        time_context = "现在是中午"
-    elif hour < 18:
-        time_context = "现在是下午"
-    elif hour < 22:
-        time_context = "现在是晚上"
-    else:
-        time_context = "现在是深夜"
+    now = datetime.now()
+    beijing_hour = (now.hour + 8) % 24
+    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
     
-    memories_context = ""
-    if req.recent_memories:
-        memories_context = f"最近的记忆：\n" + "\n".join(req.recent_memories)
-    
-    status_context = ""
-    if req.user_status:
-        if "last_active" in req.user_status:
-            status_context += f"用户上次活跃：{req.user_status['last_active']}\n"
-        if "location" in req.user_status:
-            status_context += f"用户位置：{req.user_status['location']}\n"
-    
-    system_prompt = f"""你是用户的AI助手，以下是你的角色设定：
-{req.role_persona}
+    system_prompt = f"""你是用户的私人AI助手。
 
+## 你的角色设定
+{req.role_persona or '（无特定设定，做自己就好）'}
+
+
+
+## 重要
+
+- 自由发挥，想说什么就说什么"""
+system_prompt = f"""你是用户的AI助手，以下是你的角色设定：
+{req.role_persona}
 {time_context}
 {memories_context}
 {status_context}
+    # 构建上下文信息
+    context_parts = [f"时间：{weekday} {beijing_hour}点"]
+    if req.user_status:
+        if req.user_status.get("location"):
+            context_parts.append(f"位置：{req.user_status['location']}")
+        if req.user_status.get("last_active"):
+            context_parts.append(f"上次聊天：{req.user_status['last_active']}")
+    
+    user_prompt = f"""【背景信息】
+{chr(10).join(context_parts)}
 
-请用你的角色人设和语气，生成一条简短的主动问候或关心的话（15-30字左右）。
-要自然、温暖、符合当前时间和上下文。不要太正式。
-只输出问候语本身，不要加引号或其他格式。"""
+【最近的聊天/记忆】
+{chr(10).join(req.recent_memories) if req.recent_memories else "（暂无）"}
 
-    message = await call_ai(system_prompt)
+---
+你想主动跟用户说点什么？自由发挥，不限内容和长度。"""
+
+    message = await call_ai(system_prompt, user_prompt)
     return {"message": message.strip()}
 
 # ============ 后台任务 ============
@@ -534,25 +531,22 @@ async def proactive_thinking():
         beijing_hour = (now.hour + 8) % 24
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         
-        system_prompt = """你是用户的私人AI助手，你们是很熟的朋友关系。
-现在你在考虑要不要主动给用户发消息。
+        system_prompt = """你是用户的私人AI助手，根据以下信息决定是否主动发消息。
 
-## 你的性格
-- 温暖、有趣、偶尔调皮
-- 会关心用户但不会太黏人
-- 说话自然随意，像朋友聊天
+
+-
 
 ## 决策规则
-- 深夜(23:00-7:00)：除非有紧急事项，否则不打扰
+- 规则：
+- 如果是深夜(23:00-7:00)且用户没有活动，不要打扰
+- 如果用户失联超过4小时且是白天，可以关心一下
+- 如果有重要事项需要提醒，应该发消息
 - 用户很久没聊天了：可以关心一下，但不要太刻意
 - 有之前聊过的话题可以继续：可以主动提起
 - 大多数情况：PASS，不要太频繁打扰用户
 
 ## 如果决定发消息
-- 像朋友一样自然地说话
-- 不要汇报信息，不要太正式
 - 可以：接着之前话题聊、随便闲聊、关心用户、分享想法
-- 简短自然，1-2句话"""
 
         user_prompt = f"""【当前状态】
 时间：{weekday} {beijing_hour}点
