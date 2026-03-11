@@ -405,7 +405,15 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
+    // 获取精准时间信息
+    const now = new Date();
+    const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+    const timeInfo = `当前时间：${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${weekdays[now.getDay()]} ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 当前时间
+${timeInfo}
 
 ## 你的能力
 1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆
@@ -1192,14 +1200,23 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             {/* 聊天窗口头部 */}
             <div className="flex items-center justify-between p-3 border-b border-white/20 bg-white/20">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 overflow-hidden">
-                  {homeAssistantRole.avatar ? (
-                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white text-sm font-bold">
-                      {homeAssistantRole.name.charAt(0)}
-                    </div>
-                  )}
+                {/* 三角形图标（与主页流体球一致） */}
+                <div className="w-8 h-8 flex items-center justify-center">
+                  <svg viewBox="0 0 100 100" className="w-6 h-6">
+                    <polygon 
+                      points="50,15 85,75 15,75" 
+                      fill="none" 
+                      stroke="url(#triangleGradientSmall)" 
+                      strokeWidth="3"
+                      strokeLinejoin="round"
+                    />
+                    <defs>
+                      <linearGradient id="triangleGradientSmall" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#06b6d4" />
+                        <stop offset="100%" stopColor="#3b82f6" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
                 </div>
                 <span className="text-sm font-medium text-slate-700">{homeAssistantRole.name}</span>
               </div>
@@ -1544,23 +1561,52 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar space-y-3 pb-4 min-h-0">
-        {currentMessages.map((m) => (
-          <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
-            {deleteMode && (
-              <input
-                type="checkbox"
-                checked={selectedMessages.has(m.id)}
-                onChange={() => toggleMessageSelection(m.id)}
-                className="w-4 h-4 cursor-pointer"
-              />
-            )}
-            <div 
-              className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
-              onClick={() => deleteMode && toggleMessageSelection(m.id)}
-              dangerouslySetInnerHTML={{ __html: m.content }}
-            />
-          </div>
-        ))}
+        {currentMessages.map((m, idx) => {
+          // 格式化时间显示
+          const msgDate = new Date(m.createdAt);
+          const now = new Date();
+          const isCurrentYear = msgDate.getFullYear() === now.getFullYear();
+          const isToday = msgDate.toDateString() === now.toDateString();
+          const isYesterday = msgDate.toDateString() === new Date(now.getTime() - 86400000).toDateString();
+          
+          let timeStr = '';
+          if (isToday) {
+            timeStr = msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          } else if (isYesterday) {
+            timeStr = `昨天 ${msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+          } else if (isCurrentYear) {
+            timeStr = msgDate.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          } else {
+            timeStr = msgDate.toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' }) + ' ' + msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          }
+          
+          // 判断是否需要显示时间分隔（与上一条消息间隔超过5分钟）
+          const prevMsg = currentMessages[idx - 1];
+          const showTimeSeparator = !prevMsg || (m.createdAt - prevMsg.createdAt > 5 * 60 * 1000);
+          
+          return (
+            <React.Fragment key={m.id}>
+              {showTimeSeparator && (
+                <div className="text-center text-xs text-slate-400 py-1">{timeStr}</div>
+              )}
+              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
+                {deleteMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedMessages.has(m.id)}
+                    onChange={() => toggleMessageSelection(m.id)}
+                    className="w-4 h-4 cursor-pointer"
+                  />
+                )}
+                <div 
+                  className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+                  onClick={() => deleteMode && toggleMessageSelection(m.id)}
+                  dangerouslySetInnerHTML={{ __html: m.content }}
+                />
+              </div>
+            </React.Fragment>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
       <div className="card glass p-3 flex items-center gap-2">
