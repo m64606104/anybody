@@ -150,6 +150,40 @@ async def call_ai(system_prompt: str, user_message: str = "") -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+def get_butler_role_persona() -> Optional[str]:
+    """从云端同步数据中获取管家角色的人设"""
+    if not supabase:
+        return None
+    
+    try:
+        result = supabase.table("user_sync")\
+            .select("roles")\
+            .eq("user_id", "default_user")\
+            .limit(1)\
+            .execute()
+        
+        if result.data and result.data[0].get("roles"):
+            roles = result.data[0]["roles"]
+            # 找到isHomeAssistant为true的角色
+            for role in roles:
+                if role.get("isHomeAssistant"):
+                    # 构建完整人设
+                    persona_parts = []
+                    if role.get("persona"):
+                        persona_parts.append(role["persona"])
+                    if role.get("traits"):
+                        persona_parts.append(f"性格特点：{role['traits']}")
+                    if role.get("tone"):
+                        persona_parts.append(f"说话风格：{role['tone']}")
+                    if role.get("memory"):
+                        persona_parts.append(f"背景记忆：{role['memory']}")
+                    
+                    return "\n".join(persona_parts) if persona_parts else None
+        return None
+    except Exception as e:
+        print(f"⚠️ 获取管家角色失败: {e}")
+        return None
+
 # ============ 生命周期 ============
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -163,7 +197,7 @@ async def lifespan(app: FastAPI):
     
     # 启动定时任务
     scheduler.add_job(check_reminders, 'interval', minutes=1, id='reminder_checker')
-    # summarize_notifications已删除（iOS不需要MacroDroid通知总结）
+    scheduler.add_job(summarize_notifications, 'interval', minutes=30, id='notification_summarizer')
     scheduler.add_job(proactive_thinking, 'interval', minutes=5, id='proactive_thinker')  # 每5分钟检查，实际执行由内部随机逻辑控制
     scheduler.start()
     print("✅ Scheduler started")
@@ -316,33 +350,28 @@ async def delete_reminder(reminder_id: str):
 # ============ 主动思考 ============
 @app.post("/proactive/generate")
 async def generate_proactive_message(req: ProactiveMessageRequest):
-    """生成主动消息"""
+    """生成主动消息（使用传入的角色人设）"""
     now = datetime.now()
     beijing_hour = (now.hour + 8) % 24
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
     
-    system_prompt = f"""你是用户的私人AI助手。
+    # 使用传入的角色人设，如果没有则从云端获取管家角色
+    persona = req.role_persona
+    if not persona:
+        persona = get_butler_role_persona()
+    
+    if not persona:
+        return {"message": ""}  # 没有角色人设，不生成消息
+    
+    system_prompt = f"""{persona}
 
-## 你的角色设定
-{req.role_persona or '（无特定设定，做自己就好）'}
+（以上是你的角色设定，请完全按照设定来说话和行动）"""
 
-
-
-## 重要
-
-- 自由发挥，想说什么就说什么"""
-system_prompt = f"""你是用户的AI助手，以下是你的角色设定：
-{req.role_persona}
-{time_context}
-{memories_context}
-{status_context}
     # 构建上下文信息
     context_parts = [f"时间：{weekday} {beijing_hour}点"]
     if req.user_status:
         if req.user_status.get("location"):
             context_parts.append(f"位置：{req.user_status['location']}")
-        if req.user_status.get("last_active"):
-            context_parts.append(f"上次聊天：{req.user_status['last_active']}")
     
     user_prompt = f"""【背景信息】
 {chr(10).join(context_parts)}
@@ -351,7 +380,7 @@ system_prompt = f"""你是用户的AI助手，以下是你的角色设定：
 {chr(10).join(req.recent_memories) if req.recent_memories else "（暂无）"}
 
 ---
-你想主动跟用户说点什么？自由发挥，不限内容和长度。"""
+你想主动跟用户说点什么？自由发挥。"""
 
     message = await call_ai(system_prompt, user_prompt)
     return {"message": message.strip()}
@@ -527,26 +556,25 @@ async def proactive_thinking():
             last_chat_time = datetime.fromisoformat(last_chat["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
             hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
         
+        # 获取管家角色人设
+        butler_persona = get_butler_role_persona()
+        if not butler_persona:
+            print("⚠️ 未设置管家角色，跳过主动思考")
+            return
+        
         # 让AI决定是否发消息
         beijing_hour = (now.hour + 8) % 24
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         
-        system_prompt = """你是用户的私人AI助手，根据以下信息决定是否主动发消息。
+        system_prompt = f"""{butler_persona}
 
-
--
+（以上是你的角色设定，请完全按照设定来说话和行动）
 
 ## 决策规则
-- 规则：
-- 如果是深夜(23:00-7:00)且用户没有活动，不要打扰
-- 如果用户失联超过4小时且是白天，可以关心一下
-- 如果有重要事项需要提醒，应该发消息
-- 用户很久没聊天了：可以关心一下，但不要太刻意
+- 深夜(23:00-7:00)且用户没有活动：不要打扰
+- 用户失联超过4小时且是白天：可以关心一下
 - 有之前聊过的话题可以继续：可以主动提起
-- 大多数情况：PASS，不要太频繁打扰用户
-
-## 如果决定发消息
-- 可以：接着之前话题聊、随便闲聊、关心用户、分享想法
+- 大多数情况：PASS，不要太频繁打扰用户"""
 
         user_prompt = f"""【当前状态】
 时间：{weekday} {beijing_hour}点
@@ -559,7 +587,7 @@ async def proactive_thinking():
 你要主动发消息吗？
 回复格式：
 - "PASS" 不发消息
-- "MESSAGE: 你想说的话" 发消息（像朋友聊天一样自然）"""
+- "MESSAGE: 你想说的话" 发消息"""
 
         decision = await call_ai(system_prompt, user_prompt)
         decision = decision.strip()
@@ -603,7 +631,7 @@ async def get_pending_proactive_messages():
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 获取未读的主动消息（metadata中没有is_read标记）
+    # 获取最近5分钟内的主动消息
     five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
     
     result = supabase.table("memories")\
@@ -615,17 +643,7 @@ async def get_pending_proactive_messages():
         .execute()
     
     if result.data:
-        msg = result.data[0]
-        # 检查是否已读
-        metadata = msg.get("metadata", {}) or {}
-        if metadata.get("is_read"):
-            return {"has_message": False}
-        
-        # 标记为已读
-        metadata["is_read"] = True
-        supabase.table("memories").update({"metadata": metadata}).eq("id", msg["id"]).execute()
-        
-        return {"has_message": True, "message": msg["content"], "id": msg["id"]}
+        return {"has_message": True, "message": result.data[0]["content"]}
     return {"has_message": False}
 
 # ============ 联网搜索 ============
@@ -951,17 +969,21 @@ async def receive_gps_data(data: GPSData):
     
     # 🎯 触发AI主动消息
     try:
-        # 获取最近的聊天记录（不只是重要记忆）
+        # 获取管家角色人设
+        butler_persona = get_butler_role_persona()
+        if not butler_persona:
+            print("⚠️ 未设置管家角色，跳过主动消息")
+            return {"success": True, "id": result.data[0]["id"] if result.data else None}
+        
+        # 获取最近的聊天记录
         recent_chats = supabase.table("memories")\
-            .select("content, type, created_at")\
+            .select("content, type")\
             .in_("type", ["chat", "proactive_message"])\
             .order("created_at", desc=True)\
             .limit(10)\
             .execute()
         
-        chat_history = []
-        for m in (recent_chats.data or []):
-            chat_history.append(m["content"][:100])
+        chat_history = [m["content"][:100] for m in (recent_chats.data or [])]
         
         # 获取重要记忆
         important_memories = supabase.table("memories")\
@@ -975,47 +997,30 @@ async def receive_gps_data(data: GPSData):
         
         # 构建上下文
         now = datetime.now()
-        hour = (now.hour + 8) % 24  # 转换为北京时间
+        beijing_hour = (now.hour + 8) % 24
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
-        time_desc = f"{hour}点" if hour < 12 else f"下午{hour-12}点" if hour < 18 else f"晚上{hour-12}点"
         
         location_info = data.address or f"经纬度({data.latitude:.2f}, {data.longitude:.2f})"
-        battery_info = data.battery if data.battery else None
+        battery_info = data.battery
         
-        # 让AI自由发挥生成主动消息
-        system_prompt = """你是用户的私人AI助手，你们是很熟的朋友关系。
+        # 使用管家角色的人设生成消息
+        system_prompt = f"""{butler_persona}
 
-## 你的性格
-- 温暖、有趣、偶尔调皮
-- 会关心用户但不会太黏人
-- 说话自然随意，像朋友聊天
+（以上是你的角色设定，请完全按照设定来说话和行动）"""
 
-## 重要规则
-1. 不要像机器人一样汇报信息（"我看到你在xxx，电量xxx"）
-2. 不要机械地问"有什么需要帮助的吗"
-3. 要像朋友一样自然地搭话，可以：
-   - 根据时间关心用户（深夜提醒休息、早上问睡得好吗）
-   - 根据位置猜测用户在干嘛（在外面玩？加班？）
-   - 接着之前的聊天话题继续聊
-   - 随便闲聊，分享一个有趣的想法
-   - 什么都不问，就是打个招呼
-4. 回复要简短自然，1-2句话，不要用markdown格式
-5. 不要每次都提到电量和位置，除非真的有必要（比如电量很低）"""
-
-        user_prompt = f"""【背景信息，不要直接复述】
-时间：{weekday} {time_desc}
+        user_prompt = f"""【当前状态】
+时间：{weekday} {beijing_hour}点
 位置：{location_info}
-电量：{f'{battery_info}%' if battery_info else '未知'}{' (电量偏低!)' if battery_info and battery_info < 30 else ''}
+电量：{f'{battery_info}%' if battery_info else '未知'}{' (电量偏低)' if battery_info and battery_info < 30 else ''}
 
-最近的聊天记录：
-{chr(10).join(chat_history) if chat_history else "（暂无聊天记录）"}
+【最近的聊天记录】
+{chr(10).join(chat_history) if chat_history else "（暂无）"}
 
-用户的重要记忆：
+【用户的重要记忆】
 {chr(10).join(important_context) if important_context else "（暂无）"}
 
 ---
-现在用户刚给手机充电，你想主动跟ta说点什么？
-记住：像朋友一样自然地说话，不要汇报信息，不要太正式。"""
+用户刚给手机充电，你想主动跟ta说点什么？自由发挥。"""
 
         message = await call_ai(system_prompt, user_prompt)
         
@@ -1113,31 +1118,26 @@ async def load_sync_data():
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    try:
-        result = supabase.table("user_sync")\
-            .select("*")\
-            .eq("user_id", USER_ID)\
-            .limit(1)\
-            .execute()
-        
-        if result.data and len(result.data) > 0:
-            data = result.data[0]
-            return {
-                "found": True,
-                "data": {
-                    "chats": data.get("chats", []),
-                    "messages": data.get("messages", {}),
-                    "roles": data.get("roles", []),
-                    "api_settings": data.get("api_settings", {}),
-                    "chat_settings": data.get("chat_settings", {}),
-                    "user_profile": data.get("user_profile", {}),
-                    "updated_at": data.get("updated_at")
-                }
+    result = supabase.table("user_sync")\
+        .select("*")\
+        .eq("user_id", USER_ID)\
+        .single()\
+        .execute()
+    
+    if result.data:
+        return {
+            "found": True,
+            "data": {
+                "chats": result.data.get("chats", []),
+                "messages": result.data.get("messages", {}),
+                "roles": result.data.get("roles", []),
+                "api_settings": result.data.get("api_settings", {}),
+                "chat_settings": result.data.get("chat_settings", {}),
+                "user_profile": result.data.get("user_profile", {}),
+                "updated_at": result.data.get("updated_at")
             }
-        return {"found": False}
-    except Exception as e:
-        print(f"⚠️ 加载同步数据失败: {e}")
-        return {"found": False, "error": str(e)}
+        }
+    return {"found": False}
 
 @app.post("/sync/save")
 async def save_sync_data(data: SyncData):
