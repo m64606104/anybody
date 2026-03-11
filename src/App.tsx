@@ -1163,17 +1163,14 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             {/* 聊天窗口头部 */}
             <div className="flex items-center justify-between p-3 border-b border-white/20 bg-white/20">
               <div className="flex items-center gap-2">
-                {/* 小三角形图标 */}
-                <div className="w-8 h-8">
-                  <svg viewBox="0 0 100 100" className="w-full h-full">
-                    <defs>
-                      <linearGradient id="smallTriGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stopColor="#22d3ee" />
-                        <stop offset="100%" stopColor="#3b82f6" />
-                      </linearGradient>
-                    </defs>
-                    <path d="M50 15 L85 75 L15 75 Z" fill="none" stroke="url(#smallTriGrad)" strokeWidth="4" strokeLinejoin="round" />
-                  </svg>
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 overflow-hidden">
+                  {homeAssistantRole.avatar ? (
+                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-white text-sm font-bold">
+                      {homeAssistantRole.name.charAt(0)}
+                    </div>
+                  )}
                 </div>
                 <span className="text-sm font-medium text-slate-700">{homeAssistantRole.name}</span>
               </div>
@@ -1527,7 +1524,32 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         ))}
         <div ref={messagesEndRef} />
       </div>
-      <div className="card glass p-3 flex items-center gap-3">
+      <div className="card glass p-3 flex items-center gap-2">
+        {/* 上传图片按钮 */}
+        <label className="cursor-pointer p-2 rounded-full hover:bg-white/30 transition-colors">
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                  const dataUrl = ev.target?.result as string;
+                  // 将图片作为消息发送
+                  const imgHtml = `<img src="${dataUrl}" style="max-width: 200px; max-height: 200px; border-radius: 8px;" />`;
+                  setInput((prev) => prev + imgHtml);
+                };
+                reader.readAsDataURL(file);
+              }
+              e.target.value = '';
+            }}
+          />
+          <svg className="w-5 h-5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        </label>
         <input
           className="flex-1 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none"
           placeholder="输入消息..."
