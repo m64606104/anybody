@@ -430,3 +430,57 @@ export async function healthCheck(): Promise<{
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
+
+// ============ 云端同步 ============
+
+export interface SyncData {
+  chats?: any[];
+  messages?: Record<string, any[]>;
+  roles?: any[];
+  api_settings?: any;
+  chat_settings?: any;
+  user_profile?: any;
+}
+
+/**
+ * 从云端加载所有数据
+ */
+export async function loadSyncData(): Promise<{
+  found: boolean;
+  data?: SyncData & { updated_at?: string };
+}> {
+  const resp = await fetch(`${API_BASE_URL}/sync/load`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 保存数据到云端
+ */
+export async function saveSyncData(data: SyncData): Promise<{
+  success: boolean;
+  updated_at?: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/sync/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 同步单条消息（实时同步）
+ */
+export async function syncMessage(chatId: string, message: any): Promise<{
+  success: boolean;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/sync/message?chat_id=${chatId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(message),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}

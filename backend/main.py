@@ -102,8 +102,15 @@ class BarkPush(BaseModel):
     body: str
     url: Optional[str] = None  # 点击跳转URL
     sound: Optional[str] = "shake"  # 铃声：shake, alarm, etc
-    is_archive: bool = True  # 是否保存通知
-    group: Optional[str] = None  # 通知分组
+
+# 云端同步模型
+class SyncData(BaseModel):
+    chats: Optional[List[dict]] = None  # 聊天列表
+    messages: Optional[dict] = None  # {chatId: [messages]}
+    roles: Optional[List[dict]] = None  # 角色列表
+    api_settings: Optional[dict] = None  # API配置
+    chat_settings: Optional[dict] = None  # 聊天设置
+    user_profile: Optional[dict] = None  # 用户资料
 
 # ============ 工具函数 ============
 async def get_embedding(text: str) -> Optional[List[float]]:
@@ -1040,6 +1047,91 @@ async def get_user_insights(limit: int = 10):
         .execute()
     
     return {"insights": result.data}
+
+# ============ 云端同步 ============
+USER_ID = "default_user"  # 单用户模式，固定用户ID
+
+@app.get("/sync/load")
+async def load_sync_data():
+    """从云端加载所有数据"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    result = supabase.table("user_sync")\
+        .select("*")\
+        .eq("user_id", USER_ID)\
+        .single()\
+        .execute()
+    
+    if result.data:
+        return {
+            "found": True,
+            "data": {
+                "chats": result.data.get("chats", []),
+                "messages": result.data.get("messages", {}),
+                "roles": result.data.get("roles", []),
+                "api_settings": result.data.get("api_settings", {}),
+                "chat_settings": result.data.get("chat_settings", {}),
+                "user_profile": result.data.get("user_profile", {}),
+                "updated_at": result.data.get("updated_at")
+            }
+        }
+    return {"found": False}
+
+@app.post("/sync/save")
+async def save_sync_data(data: SyncData):
+    """保存数据到云端"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 构建更新数据
+    update_data = {"user_id": USER_ID, "updated_at": datetime.utcnow().isoformat()}
+    if data.chats is not None:
+        update_data["chats"] = data.chats
+    if data.messages is not None:
+        update_data["messages"] = data.messages
+    if data.roles is not None:
+        update_data["roles"] = data.roles
+    if data.api_settings is not None:
+        update_data["api_settings"] = data.api_settings
+    if data.chat_settings is not None:
+        update_data["chat_settings"] = data.chat_settings
+    if data.user_profile is not None:
+        update_data["user_profile"] = data.user_profile
+    
+    # upsert: 存在则更新，不存在则插入
+    result = supabase.table("user_sync").upsert(update_data, on_conflict="user_id").execute()
+    
+    return {"success": True, "updated_at": update_data["updated_at"]}
+
+@app.post("/sync/message")
+async def sync_single_message(chat_id: str, message: dict):
+    """同步单条消息（实时同步用）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 获取当前数据
+    result = supabase.table("user_sync")\
+        .select("messages")\
+        .eq("user_id", USER_ID)\
+        .single()\
+        .execute()
+    
+    messages = result.data.get("messages", {}) if result.data else {}
+    
+    # 添加新消息
+    if chat_id not in messages:
+        messages[chat_id] = []
+    messages[chat_id].append(message)
+    
+    # 更新
+    supabase.table("user_sync").upsert({
+        "user_id": USER_ID,
+        "messages": messages,
+        "updated_at": datetime.utcnow().isoformat()
+    }, on_conflict="user_id").execute()
+    
+    return {"success": True}
 
 # ============ 健康检查 ============
 @app.get("/health")

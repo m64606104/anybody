@@ -18,7 +18,10 @@ import {
   getUserStatus,
   searchMemory,
   parseQueryFromText,
-  removeQueryFromText
+  removeQueryFromText,
+  loadSyncData,
+  saveSyncData,
+  syncMessage
 } from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
@@ -156,6 +159,70 @@ const App: React.FC = () => {
   const [unreadMessages, setUnreadMessages] = useState<Record<string, Message[]>>({}); // 未读消息 {chatId: messages[]}
   const [showUnreadPreview, setShowUnreadPreview] = useState(false); // 是否展开未读消息预览
   const [hasTriggeredInitialGreeting, setHasTriggeredInitialGreeting] = useState(false); // 是否已触发首次问候
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<'loading' | 'synced' | 'error' | 'offline'>('loading');
+  const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
+  const syncTimeoutRef = useRef<number | null>(null);
+
+  // ============ 云端同步逻辑 ============
+  // 启动时从云端加载数据
+  useEffect(() => {
+    const loadFromCloud = async () => {
+      try {
+        const result = await loadSyncData();
+        if (result.found && result.data) {
+          console.log('☁️ 从云端加载数据:', result.data.updated_at);
+          // 只有云端数据比本地新才覆盖
+          if (result.data.chats?.length) setChats(result.data.chats);
+          if (result.data.messages && Object.keys(result.data.messages).length) setMessagesMap(result.data.messages);
+          if (result.data.roles?.length) setRoles(result.data.roles);
+          if (result.data.api_settings?.apiKey) setApiSettings(result.data.api_settings);
+          if (result.data.chat_settings?.bufferMs) setChatSettings(result.data.chat_settings);
+          if (result.data.user_profile?.nickname) setUserProfile(result.data.user_profile);
+          setLastSyncTime(result.data.updated_at || null);
+          setCloudSyncStatus('synced');
+        } else {
+          console.log('☁️ 云端无数据，使用本地数据');
+          setCloudSyncStatus('synced');
+        }
+      } catch (e) {
+        console.warn('☁️ 云端加载失败，使用本地数据:', e);
+        setCloudSyncStatus('offline');
+      }
+    };
+    loadFromCloud();
+  }, []);
+
+  // 数据变化时自动保存到云端（防抖）
+  const saveToCloud = useCallback(() => {
+    if (syncTimeoutRef.current) {
+      window.clearTimeout(syncTimeoutRef.current);
+    }
+    syncTimeoutRef.current = window.setTimeout(async () => {
+      try {
+        await saveSyncData({
+          chats,
+          messages: messagesMap,
+          roles,
+          api_settings: apiSettings,
+          chat_settings: chatSettings,
+          user_profile: userProfile,
+        });
+        setLastSyncTime(new Date().toISOString());
+        setCloudSyncStatus('synced');
+        console.log('☁️ 已同步到云端');
+      } catch (e) {
+        console.warn('☁️ 同步失败:', e);
+        setCloudSyncStatus('error');
+      }
+    }, 2000); // 2秒防抖
+  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
+
+  // 监听数据变化，触发同步
+  useEffect(() => {
+    if (cloudSyncStatus !== 'loading') {
+      saveToCloud();
+    }
+  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
 
   // 每个聊天独立的缓冲区和计时器
   const chatBuffers = useRef<Record<string, string[]>>({});
