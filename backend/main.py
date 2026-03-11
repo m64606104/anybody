@@ -368,8 +368,25 @@ async def check_reminders():
         .execute()
     
     for reminder in result.data:
-        # TODO: 发送提醒到前端（可以用WebSocket或轮询）
         print(f"⏰ 提醒到期: {reminder['content']}")
+        
+        # 通过Bark推送提醒到手机
+        if BARK_KEY:
+            try:
+                async with httpx.AsyncClient() as client:
+                    bark_url = f"https://api.day.app/{BARK_KEY}/⏰闹钟提醒/{quote(reminder['content'])}?sound=alarm&isArchive=1"
+                    await client.get(bark_url, timeout=10.0)
+                    print(f"📤 已推送闹钟提醒到Bark")
+            except Exception as e:
+                print(f"⚠️ Bark推送失败: {e}")
+        
+        # 存入memories作为提醒记录
+        supabase.table("memories").insert({
+            "type": "reminder_triggered",
+            "content": f"闹钟提醒: {reminder['content']}",
+            "metadata": {"reminder_id": reminder["id"]},
+            "is_important": False
+        }).execute()
         
         # 处理重复闹钟
         if reminder.get("repeat"):
@@ -512,11 +529,20 @@ async def proactive_thinking():
             supabase.table("memories").insert({
                 "type": "proactive_message",
                 "content": message,
-                "metadata": {"hours_since_last_chat": hours_since_last_chat},
+                "metadata": {"hours_since_last_chat": hours_since_last_chat, "trigger": "proactive_thinking"},
                 "is_important": False
             }).execute()
             print(f"💬 主动消息已生成: {message}")
-            # TODO: 通过WebSocket或轮询机制推送到前端
+            
+            # 通过Bark推送到手机
+            if BARK_KEY:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        bark_url = f"https://api.day.app/{BARK_KEY}/AI助手/{quote(message)}?sound=shake&isArchive=1"
+                        await client.get(bark_url, timeout=10.0)
+                        print(f"📤 已推送主动消息到Bark")
+                except Exception as bark_err:
+                    print(f"⚠️ Bark推送失败: {bark_err}")
             
         elif decision == "LOCK":
             print("🔒 建议用户锁屏休息")
@@ -890,7 +916,12 @@ async def receive_gps_data(data: GPSData):
         battery_info = f"{data.battery}%" if data.battery else "未知"
         
         # 让AI生成主动消息
-        prompt = f"""你是用户的AI助手。用户刚刚给手机充电，系统自动上报了以下信息：
+        system_prompt = """你是用户的AI助手，性格温暖友好。
+当收到用户状态更新时，你要用轻松自然的语气主动跟用户打个招呼。
+不要像汇报工作一样，要像朋友一样自然地搭话。
+回复要简短，1-2句话即可。不要用markdown格式。"""
+
+        user_prompt = f"""用户刚刚给手机充电，系统自动上报了以下信息：
 - 当前时间：{time_context}
 - 位置：{location_info}
 - 电量：{battery_info}
@@ -898,12 +929,9 @@ async def receive_gps_data(data: GPSData):
 用户最近的重要记忆：
 {chr(10).join(memory_context) if memory_context else "（暂无）"}
 
-请根据这些信息，用轻松自然的语气主动跟用户打个招呼或聊几句。
-不要像汇报工作一样，要像朋友一样自然地搭话。
-可以关心一下用户，或者根据位置/时间提出一些建议。
-回复要简短，1-2句话即可。"""
+请根据这些信息，主动跟用户打个招呼或聊几句。"""
 
-        message = await call_ai(prompt)
+        message = await call_ai(system_prompt, user_prompt)
         
         if message and BARK_KEY:
             # 通过Bark推送到手机
