@@ -157,7 +157,7 @@ async def lifespan(app: FastAPI):
     # 启动定时任务
     scheduler.add_job(check_reminders, 'interval', minutes=1, id='reminder_checker')
     scheduler.add_job(summarize_notifications, 'interval', minutes=30, id='notification_summarizer')
-    scheduler.add_job(proactive_thinking, 'interval', minutes=10, id='proactive_thinker')  # 基础间隔，内部有随机逻辑
+    scheduler.add_job(proactive_thinking, 'interval', minutes=5, id='proactive_thinker')  # 每5分钟检查，实际执行由内部随机逻辑控制
     scheduler.start()
     print("✅ Scheduler started")
     
@@ -466,18 +466,41 @@ async def summarize_notifications():
 last_proactive_time = None
 
 async def proactive_thinking():
-    """随机间隔主动思考，决定是否发送消息"""
+    """随机间隔主动思考，决定是否发送消息
+    白天(7:00-23:00): 30分钟-2小时随机
+    夜间(23:00-7:00): 3-5小时随机
+    """
     global last_proactive_time
     
     if not supabase:
         return
     
     try:
-        # 随机决定是否这次执行（模拟2-30分钟随机间隔）
-        if random.random() > 0.3:  # 70%概率跳过，实现随机间隔
-            return
-        
         now = datetime.utcnow()
+        current_hour = (now.hour + 8) % 24  # 转换为北京时间
+        
+        # 根据时间段决定是否执行
+        if last_proactive_time:
+            elapsed_minutes = (now - last_proactive_time).total_seconds() / 60
+            
+            if 3 <= current_hour < 7:
+                # 夜间3-7点：3-5小时随机（180-300分钟）
+                min_interval = random.randint(180, 300)
+                if elapsed_minutes < min_interval:
+                    return
+            elif 23 <= current_hour or current_hour < 3:
+                # 深夜23-3点：2-4小时随机（120-240分钟）
+                min_interval = random.randint(120, 240)
+                if elapsed_minutes < min_interval:
+                    return
+            else:
+                # 白天7-23点：30分钟-2小时随机（30-120分钟）
+                min_interval = random.randint(30, 120)
+                if elapsed_minutes < min_interval:
+                    return
+        
+        # 更新上次执行时间
+        last_proactive_time = now
         
         # 获取最近的记忆
         memories_result = supabase.table("memories")\
