@@ -14,7 +14,7 @@ import {
   createCalendarEvent,
   parseEventFromText,
   removeEventFromText,
-  getRecentMemories,
+  getMemoriesByTypes,
   getUserStatus,
   searchMemory,
   parseQueryFromText,
@@ -359,30 +359,26 @@ const App: React.FC = () => {
     let screenCaptureContext = '';
     
     try {
-      // 获取最近10条记忆
-      const memoriesResult = await getRecentMemories(10);
-      if (memoriesResult.memories?.length) {
-        // 分离截屏数据和普通记忆
-        const screenCaptures = memoriesResult.memories.filter(m => m.type === 'screen_capture');
-        const otherMemories = memoriesResult.memories.filter(m => m.type !== 'screen_capture');
-        
-        if (otherMemories.length) {
-          const memoryList = otherMemories.slice(0, 5)
-            .map(m => `- [${m.type}] ${m.content.slice(0, 100)}`)
-            .join('\n');
-          memoryContext = `\n## 最近的记忆\n${memoryList}`;
-        }
-        
-        // 截屏数据单独处理（微信、美团、小红书、咸鱼等）
-        if (screenCaptures.length) {
-          const captureList = screenCaptures.slice(0, 3)
-            .map(m => {
-              const app = m.metadata?.app || '未知应用';
-              return `- [${app}] ${m.content.slice(0, 200)}`;
-            })
-            .join('\n');
-          screenCaptureContext = `\n## 用户最近的应用截屏内容（你可以看到用户在其他应用的活动）\n${captureList}`;
-        }
+      // 按类型分别获取记忆（避免互相挤掉）
+      const memoriesResult = await getMemoriesByTypes(5, 3, 2);
+      
+      // 聊天记录
+      if (memoriesResult.chats?.length) {
+        const chatList = memoriesResult.chats
+          .map(m => `- ${m.content.slice(0, 100)}`)
+          .join('\n');
+        memoryContext = `\n## 最近的聊天记录（来自记忆库）\n${chatList}`;
+      }
+      
+      // 截屏数据（微信、美团、小红书、咸鱼等）
+      if (memoriesResult.screen_captures?.length) {
+        const captureList = memoriesResult.screen_captures
+          .map(m => {
+            const app = m.metadata?.app || '未知应用';
+            return `- [${app}] ${m.content.slice(0, 300)}`;
+          })
+          .join('\n');
+        screenCaptureContext = `\n## 用户最近的应用截屏内容（你可以看到用户在其他应用的活动，如课表、聊天等）\n${captureList}`;
       }
       
       // 获取用户状态（位置、电量等）
