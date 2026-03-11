@@ -73,6 +73,13 @@ class ExpenseCreate(BaseModel):
     description: str
     date: Optional[str] = None  # ISO格式，默认今天
 
+class CalendarEventCreate(BaseModel):
+    title: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    description: Optional[str] = None
+    is_all_day: bool = False
+
 # ============ 工具函数 ============
 async def get_embedding(text: str) -> Optional[List[float]]:
     """获取文本的embedding向量，如果失败返回None"""
@@ -575,6 +582,131 @@ async def get_expense_summary(days: int = 30):
         "count": len(result.data),
         "days": days
     }
+
+# ============ 日历功能 ============
+@app.post("/calendar/event")
+async def create_calendar_event(event: CalendarEventCreate):
+    """创建日历事件"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 存入memories表，type=calendar_event
+    data = {
+        "type": "calendar_event",
+        "content": event.title,
+        "metadata": {
+            "title": event.title,
+            "start_time": event.start_time.isoformat(),
+            "end_time": event.end_time.isoformat() if event.end_time else None,
+            "description": event.description,
+            "is_all_day": event.is_all_day
+        },
+        "is_important": True
+    }
+    
+    result = supabase.table("memories").insert(data).execute()
+    
+    # 同时创建一个reminder用于提醒
+    reminder_data = {
+        "user_id": "default_user",
+        "content": f"📅 {event.title}" + (f": {event.description}" if event.description else ""),
+        "remind_at": event.start_time.isoformat(),
+        "is_done": False,
+        "created_at": datetime.utcnow().isoformat()
+    }
+    supabase.table("reminders").insert(reminder_data).execute()
+    
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+@app.get("/calendar/events")
+async def get_calendar_events(start_date: str = None, end_date: str = None):
+    """获取日历事件"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 默认获取当月事件
+    if not start_date:
+        now = datetime.utcnow()
+        start_date = now.replace(day=1).isoformat()
+    if not end_date:
+        now = datetime.utcnow()
+        next_month = now.replace(day=28) + timedelta(days=4)
+        end_date = next_month.replace(day=1).isoformat()
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "calendar_event")\
+        .gte("created_at", start_date)\
+        .lte("created_at", end_date)\
+        .order("created_at")\
+        .execute()
+    
+    events = []
+    for item in result.data:
+        meta = item.get("metadata", {})
+        events.append({
+            "id": item["id"],
+            "title": meta.get("title", item["content"]),
+            "start_time": meta.get("start_time"),
+            "end_time": meta.get("end_time"),
+            "description": meta.get("description"),
+            "is_all_day": meta.get("is_all_day", False)
+        })
+    
+    return {"events": events}
+
+@app.get("/calendar/today")
+async def get_today_schedule():
+    """获取今日日程"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    today = datetime.utcnow().date()
+    today_start = datetime.combine(today, datetime.min.time()).isoformat()
+    today_end = datetime.combine(today, datetime.max.time()).isoformat()
+    
+    # 获取今日事件
+    events_result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "calendar_event")\
+        .execute()
+    
+    # 获取今日提醒
+    reminders_result = supabase.table("reminders")\
+        .select("*")\
+        .eq("is_done", False)\
+        .gte("remind_at", today_start)\
+        .lte("remind_at", today_end)\
+        .order("remind_at")\
+        .execute()
+    
+    # 过滤今日事件
+    today_events = []
+    for item in events_result.data:
+        meta = item.get("metadata", {})
+        start_time = meta.get("start_time", "")
+        if start_time and start_time.startswith(str(today)):
+            today_events.append({
+                "id": item["id"],
+                "title": meta.get("title", item["content"]),
+                "start_time": start_time,
+                "end_time": meta.get("end_time"),
+                "type": "event"
+            })
+    
+    # 合并提醒
+    for reminder in reminders_result.data:
+        today_events.append({
+            "id": reminder["id"],
+            "title": reminder["content"],
+            "start_time": reminder["remind_at"],
+            "type": "reminder"
+        })
+    
+    # 按时间排序
+    today_events.sort(key=lambda x: x.get("start_time", ""))
+    
+    return {"date": str(today), "schedule": today_events}
 
 # ============ 健康检查 ============
 @app.get("/health")

@@ -10,7 +10,10 @@ import {
   removeExpenseFromText,
   webSearch,
   parseSearchFromText,
-  removeSearchFromText
+  removeSearchFromText,
+  createCalendarEvent,
+  parseEventFromText,
+  removeEventFromText
 } from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
@@ -395,10 +398,20 @@ const App: React.FC = () => {
       }
     }
     
+    // 解析EVENT指令
+    const event = parseEventFromText(content);
+    if (event) {
+      console.log('📅 检测到EVENT指令:', event);
+      createCalendarEvent(event.title, event.time, undefined, event.description)
+        .then(() => console.log('✅ 日历事件创建成功'))
+        .catch(e => console.warn('❌ 日历事件创建失败:', e));
+    }
+    
     // 移除所有指令后的干净文本
     let cleanContent = removeReminderFromText(content);
     cleanContent = removeExpenseFromText(cleanContent);
     cleanContent = removeSearchFromText(cleanContent);
+    cleanContent = removeEventFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };

@@ -287,6 +287,99 @@ export function removeSearchFromText(text: string): string {
 }
 
 /**
+ * 创建日历事件
+ */
+export async function createCalendarEvent(
+  title: string,
+  startTime: Date,
+  endTime?: Date,
+  description?: string,
+  isAllDay = false
+): Promise<{ success: boolean; id?: number }> {
+  const resp = await fetch(`${API_BASE_URL}/calendar/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      start_time: startTime.toISOString(),
+      end_time: endTime?.toISOString(),
+      description,
+      is_all_day: isAllDay,
+    }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取日历事件
+ */
+export async function getCalendarEvents(
+  startDate?: string,
+  endDate?: string
+): Promise<{
+  events: {
+    id: number;
+    title: string;
+    start_time: string;
+    end_time?: string;
+    description?: string;
+    is_all_day: boolean;
+  }[];
+}> {
+  const params = new URLSearchParams();
+  if (startDate) params.append('start_date', startDate);
+  if (endDate) params.append('end_date', endDate);
+  const resp = await fetch(`${API_BASE_URL}/calendar/events?${params}`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取今日日程
+ */
+export async function getTodaySchedule(): Promise<{
+  date: string;
+  schedule: {
+    id: string | number;
+    title: string;
+    start_time: string;
+    end_time?: string;
+    type: 'event' | 'reminder';
+  }[];
+}> {
+  const resp = await fetch(`${API_BASE_URL}/calendar/today`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 解析AI回复中的EVENT指令
+ * 格式: [EVENT:2026-03-12T14:00:00|开会|讨论项目进度]
+ */
+export function parseEventFromText(text: string): { time: Date; title: string; description?: string } | null {
+  const match = text.match(/\[EVENT:([^\|]+)\|([^\|\]]+)(?:\|([^\]]+))?\]/);
+  if (!match) return null;
+  
+  try {
+    const time = new Date(match[1]);
+    const title = match[2];
+    const description = match[3];
+    if (isNaN(time.getTime())) return null;
+    return { time, title, description };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从文本中移除EVENT指令
+ */
+export function removeEventFromText(text: string): string {
+  return text.replace(/\[EVENT:[^\]]+\]/g, '').trim();
+}
+
+/**
  * 健康检查
  */
 export async function healthCheck(): Promise<{
