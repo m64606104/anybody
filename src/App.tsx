@@ -280,7 +280,29 @@ const App: React.FC = () => {
     const role = roles.find((r) => r.id === chat?.roleId);
     const rolePrompt = buildRolePrompt(role);
 
-    const systemPrompt = `你是一个回复的助手。以下是角色设定（可选）:\n${rolePrompt}\n请只输出 JSON，格式为 {"segments": string[]}，其中 segments 是分段回复。不要添加额外字段。若无法严格输出 JSON，请使用分隔符 ${chatSettings.chunkSeparator} 分段。`;
+    const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 你的能力
+1. **记忆能力**：你的所有对话都会自动存入记忆库，你可以记住用户说过的事情
+2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
+3. **日历事件**：你可以帮用户创建日程安排
+4. **记账**：你可以帮用户记录支出
+5. **联网搜索**：你可以搜索网络获取最新信息
+6. **主动消息**：后台会定期检查，在合适的时候主动给用户发消息
+
+## 特殊指令格式（在回复中使用，系统会自动执行）
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
+- 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
+- 记账：[EXPENSE:50|food|午餐]
+- 搜索：[SEARCH:查询内容]
+
+## 角色设定
+${rolePrompt || '（无特定角色设定）'}
+
+## 回复格式
+请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
+如果需要执行指令，把指令放在segments的某一段中。
+若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
     const apiMessages = [
       { role: 'system', content: systemPrompt },
