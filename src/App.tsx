@@ -219,7 +219,7 @@ const App: React.FC = () => {
     const role = roles.find((r) => r.id === chat?.roleId);
     const rolePrompt = buildRolePrompt(role);
 
-    const systemPrompt = `你是一个简洁回复的助手。以下是角色设定（可选）:\n${rolePrompt}\n请只输出 JSON，格式为 {"segments": string[]}，其中 segments 是分段回复。不要添加额外字段。若无法严格输出 JSON，请使用分隔符 ${chatSettings.chunkSeparator} 分段。`;
+    const systemPrompt = `你是一个回复的助手。以下是角色设定（可选）:\n${rolePrompt}\n请只输出 JSON，格式为 {"segments": string[]}，其中 segments 是分段回复。不要添加额外字段。若无法严格输出 JSON，请使用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
     const apiMessages = [
       { role: 'system', content: systemPrompt },

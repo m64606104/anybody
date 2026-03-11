@@ -4,7 +4,7 @@
  */
 
 // 后端地址（开发时用本地，生产用Render部署的URL）
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://anybody.onrender.com';
 
 // ============ 类型定义 ============
 export interface Memory {

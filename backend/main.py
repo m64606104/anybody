@@ -6,6 +6,7 @@ AI Assistant Backend Service
 """
 import os
 import asyncio
+import random
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -112,6 +113,8 @@ async def lifespan(app: FastAPI):
     
     # 启动定时任务
     scheduler.add_job(check_reminders, 'interval', minutes=1, id='reminder_checker')
+    scheduler.add_job(summarize_notifications, 'interval', minutes=30, id='notification_summarizer')
+    scheduler.add_job(proactive_thinking, 'interval', minutes=10, id='proactive_thinker')  # 基础间隔，内部有随机逻辑
     scheduler.start()
     print("✅ Scheduler started")
     
@@ -305,6 +308,162 @@ async def check_reminders():
                 "is_done": True
             }).eq("id", reminder["id"]).execute()
 
+# ============ 消息总结协程 ============
+async def summarize_notifications():
+    """每30分钟总结App_Pending通知"""
+    if not supabase:
+        return
+    
+    try:
+        # 查询待处理的通知
+        result = supabase.table("notifications")\
+            .select("*")\
+            .contains("tags", ["App_Pending"])\
+            .execute()
+        
+        if not result.data:
+            print("📭 没有待处理的通知")
+            return
+        
+        # 按app分组
+        notifications_text = "\n".join([
+            f"[{n.get('app_name', '未知')}] {n.get('title', '')}: {n.get('content', '')}"
+            for n in result.data
+        ])
+        
+        # 让AI生成总结
+        summary = await call_ai(
+            system_prompt="你是一个消息总结助手。请简洁地总结以下手机通知，提取重要信息，忽略广告和不重要的内容。用中文回复，控制在100字以内。",
+            user_message=notifications_text
+        )
+        
+        print(f"📋 通知总结: {summary}")
+        
+        # 存入memories
+        supabase.table("memories").insert({
+            "type": "notification_summary",
+            "content": summary,
+            "metadata": {"notification_count": len(result.data)},
+            "is_important": False
+        }).execute()
+        
+        # 标记通知为已处理
+        for n in result.data:
+            supabase.table("notifications").update({
+                "tags": ["App_Done"],
+                "processed_at": datetime.utcnow().isoformat()
+            }).eq("id", n["id"]).execute()
+        
+        print(f"✅ 已处理 {len(result.data)} 条通知")
+        
+    except Exception as e:
+        print(f"❌ 通知总结失败: {e}")
+
+# ============ 主动思考协程 ============
+# 存储上次主动思考的时间
+last_proactive_time = None
+
+async def proactive_thinking():
+    """随机间隔主动思考，决定是否发送消息"""
+    global last_proactive_time
+    
+    if not supabase:
+        return
+    
+    try:
+        # 随机决定是否这次执行（模拟2-30分钟随机间隔）
+        if random.random() > 0.3:  # 70%概率跳过，实现随机间隔
+            return
+        
+        now = datetime.utcnow()
+        
+        # 获取最近的记忆
+        memories_result = supabase.table("memories")\
+            .select("content, type, created_at")\
+            .order("created_at", desc=True)\
+            .limit(10)\
+            .execute()
+        
+        recent_memories = [m["content"] for m in memories_result.data] if memories_result.data else []
+        
+        # 计算失联时长（最后一条chat类型记忆的时间）
+        last_chat = None
+        for m in memories_result.data:
+            if m.get("type") == "chat":
+                last_chat = m
+                break
+        
+        hours_since_last_chat = 0
+        if last_chat:
+            last_chat_time = datetime.fromisoformat(last_chat["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
+            hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
+        
+        # 让AI决定是否发消息
+        decision_prompt = f"""你是用户的AI助手。根据以下信息决定是否主动发消息：
+
+当前时间: {now.strftime('%H:%M')}
+用户失联时长: {hours_since_last_chat:.1f}小时
+最近记忆: {'; '.join(recent_memories[:5]) if recent_memories else '无'}
+
+规则：
+- 如果是深夜(23:00-7:00)且用户没有活动，不要打扰
+- 如果用户失联超过4小时且是白天，可以关心一下
+- 如果有重要事项需要提醒，应该发消息
+- 大多数情况下应该PASS，不要太频繁打扰
+
+请回复：
+- "PASS" 如果不需要发消息
+- "MESSAGE: [你想说的话]" 如果决定发消息（15-30字）
+- "LOCK" 如果建议用户休息/锁屏"""
+
+        decision = await call_ai(decision_prompt)
+        decision = decision.strip()
+        
+        print(f"🤔 主动思考决策: {decision[:50]}...")
+        
+        if decision.startswith("MESSAGE:"):
+            message = decision[8:].strip()
+            # 存入记忆，标记为主动消息
+            supabase.table("memories").insert({
+                "type": "proactive_message",
+                "content": message,
+                "metadata": {"hours_since_last_chat": hours_since_last_chat},
+                "is_important": False
+            }).execute()
+            print(f"💬 主动消息已生成: {message}")
+            # TODO: 通过WebSocket或轮询机制推送到前端
+            
+        elif decision == "LOCK":
+            print("🔒 建议用户锁屏休息")
+            
+        else:
+            print("⏭️ PASS - 不发送消息")
+            
+    except Exception as e:
+        print(f"❌ 主动思考失败: {e}")
+
+# ============ 获取待推送的主动消息 ============
+@app.get("/proactive/pending")
+async def get_pending_proactive_messages():
+    """获取待推送的主动消息（前端轮询用）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 获取最近5分钟内的主动消息
+    five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "proactive_message")\
+        .gte("created_at", five_min_ago)\
+        .order("created_at", desc=True)\
+        .limit(1)\
+        .execute()
+    
+    if result.data:
+        return {"has_message": True, "message": result.data[0]["content"]}
+    return {"has_message": False}
+
 # ============ 健康检查 ============
 @app.get("/health")
 async def health_check():
@@ -316,5 +475,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
