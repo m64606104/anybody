@@ -153,6 +153,140 @@ export async function generateProactiveMessage(
 }
 
 /**
+ * 获取待推送的主动消息
+ */
+export async function getPendingProactiveMessage(): Promise<{
+  has_message: boolean;
+  message?: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/proactive/pending`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 解析AI回复中的REMINDER指令
+ * 格式: [REMINDER:2026-03-12T08:00:00|开会]
+ * 返回: { time: Date, content: string } 或 null
+ */
+export function parseReminderFromText(text: string): { time: Date; content: string } | null {
+  const match = text.match(/\[REMINDER:([^\|]+)\|([^\]]+)\]/);
+  if (!match) return null;
+  
+  try {
+    const time = new Date(match[1]);
+    const content = match[2];
+    if (isNaN(time.getTime())) return null;
+    return { time, content };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从文本中移除REMINDER指令（用于显示给用户的干净文本）
+ */
+export function removeReminderFromText(text: string): string {
+  return text.replace(/\[REMINDER:[^\]]+\]/g, '').trim();
+}
+
+/**
+ * 联网搜索
+ */
+export async function webSearch(
+  query: string,
+  numResults = 5
+): Promise<{
+  success: boolean;
+  results?: { title: string; url: string; snippet: string }[];
+  error?: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/search/web`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, num_results: numResults }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 添加支出记录
+ */
+export async function addExpense(
+  amount: number,
+  category: string,
+  description: string,
+  date?: string
+): Promise<{ success: boolean; id?: number }> {
+  const resp = await fetch(`${API_BASE_URL}/expense/add`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount, category, description, date }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取支出统计
+ */
+export async function getExpenseSummary(
+  days = 30
+): Promise<{
+  total: number;
+  by_category: Record<string, number>;
+  count: number;
+  days: number;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/expense/summary?days=${days}`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 解析AI回复中的EXPENSE指令
+ * 格式: [EXPENSE:50|food|午餐]
+ */
+export function parseExpenseFromText(text: string): { amount: number; category: string; description: string } | null {
+  const match = text.match(/\[EXPENSE:([^\|]+)\|([^\|]+)\|([^\]]+)\]/);
+  if (!match) return null;
+  
+  try {
+    const amount = parseFloat(match[1]);
+    const category = match[2];
+    const description = match[3];
+    if (isNaN(amount)) return null;
+    return { amount, category, description };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从文本中移除EXPENSE指令
+ */
+export function removeExpenseFromText(text: string): string {
+  return text.replace(/\[EXPENSE:[^\]]+\]/g, '').trim();
+}
+
+/**
+ * 解析AI回复中的SEARCH指令
+ * 格式: [SEARCH:查询内容]
+ */
+export function parseSearchFromText(text: string): string | null {
+  const match = text.match(/\[SEARCH:([^\]]+)\]/);
+  return match ? match[1] : null;
+}
+
+/**
+ * 从文本中移除SEARCH指令
+ */
+export function removeSearchFromText(text: string): string {
+  return text.replace(/\[SEARCH:[^\]]+\]/g, '').trim();
+}
+
+/**
  * 健康检查
  */
 export async function healthCheck(): Promise<{

@@ -5,6 +5,7 @@ AI Assistant Backend Service
 - 主动思考协程
 """
 import os
+import re
 import asyncio
 import random
 from datetime import datetime, timedelta
@@ -61,6 +62,16 @@ class ProactiveMessageRequest(BaseModel):
     role_persona: str
     recent_memories: Optional[List[str]] = None
     user_status: Optional[dict] = None  # 位置、失联时长等
+
+class WebSearchRequest(BaseModel):
+    query: str
+    num_results: int = 5
+
+class ExpenseCreate(BaseModel):
+    amount: float
+    category: str  # food, transport, shopping, entertainment, other
+    description: str
+    date: Optional[str] = None  # ISO格式，默认今天
 
 # ============ 工具函数 ============
 async def get_embedding(text: str) -> Optional[List[float]]:
@@ -463,6 +474,107 @@ async def get_pending_proactive_messages():
     if result.data:
         return {"has_message": True, "message": result.data[0]["content"]}
     return {"has_message": False}
+
+# ============ 联网搜索 ============
+@app.post("/search/web")
+async def web_search(req: WebSearchRequest):
+    """使用DuckDuckGo进行联网搜索"""
+    try:
+        async with httpx.AsyncClient() as client:
+            # DuckDuckGo HTML搜索（无需API key）
+            resp = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": req.query},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                timeout=15.0
+            )
+            
+            if resp.status_code != 200:
+                return {"success": False, "error": f"搜索失败: {resp.status_code}"}
+            
+            # 简单解析HTML提取结果
+            html = resp.text
+            results = []
+            
+            # 提取搜索结果标题和摘要
+            pattern = r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)</a>.*?<a[^>]*class="result__snippet"[^>]*>([^<]*)</a>'
+            matches = re.findall(pattern, html, re.DOTALL)
+            
+            for url, title, snippet in matches[:req.num_results]:
+                results.append({
+                    "title": title.strip(),
+                    "url": url,
+                    "snippet": snippet.strip()
+                })
+            
+            # 如果正则没匹配到，尝试更简单的方式
+            if not results:
+                # 提取所有链接和文本
+                link_pattern = r'<a[^>]*class="result__a"[^>]*>([^<]+)</a>'
+                titles = re.findall(link_pattern, html)
+                for title in titles[:req.num_results]:
+                    results.append({"title": title.strip(), "url": "", "snippet": ""})
+            
+            return {"success": True, "results": results, "query": req.query}
+            
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ============ 记账功能 ============
+@app.post("/expense/add")
+async def add_expense(expense: ExpenseCreate):
+    """添加一笔支出记录"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    date = expense.date or datetime.utcnow().strftime("%Y-%m-%d")
+    
+    # 存入memories表，type=expense
+    data = {
+        "type": "expense",
+        "content": f"{expense.category}: {expense.description} - ¥{expense.amount}",
+        "metadata": {
+            "amount": expense.amount,
+            "category": expense.category,
+            "description": expense.description,
+            "date": date
+        },
+        "is_important": False
+    }
+    
+    result = supabase.table("memories").insert(data).execute()
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+@app.get("/expense/summary")
+async def get_expense_summary(days: int = 30):
+    """获取支出统计"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "expense")\
+        .gte("created_at", start_date)\
+        .execute()
+    
+    # 按分类汇总
+    summary = {}
+    total = 0
+    for item in result.data:
+        meta = item.get("metadata", {})
+        category = meta.get("category", "other")
+        amount = meta.get("amount", 0)
+        summary[category] = summary.get(category, 0) + amount
+        total += amount
+    
+    return {
+        "total": total,
+        "by_category": summary,
+        "count": len(result.data),
+        "days": days
+    }
 
 # ============ 健康检查 ============
 @app.get("/health")

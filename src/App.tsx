@@ -1,5 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { storeMemory } from './services/api';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { 
+  storeMemory, 
+  createReminder, 
+  parseReminderFromText, 
+  removeReminderFromText, 
+  getPendingProactiveMessage,
+  addExpense,
+  parseExpenseFromText,
+  removeExpenseFromText,
+  webSearch,
+  parseSearchFromText,
+  removeSearchFromText
+} from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
 
@@ -162,6 +174,52 @@ const App: React.FC = () => {
     }
   }, [screen, currentMessages]);
 
+  // 轮询主动消息（每30秒检查一次）
+  useEffect(() => {
+    const pollProactiveMessages = async () => {
+      try {
+        const result = await getPendingProactiveMessage();
+        if (result.has_message && result.message) {
+          console.log('💬 收到主动消息:', result.message);
+          // 找到首页助手角色对应的聊天，或使用第一个聊天
+          const homeRole = roles.find(r => r.isHomeAssistant);
+          const targetChat = homeRole 
+            ? chats.find(c => c.roleId === homeRole.id) 
+            : chats[0];
+          
+          if (targetChat) {
+            // 推送主动消息到聊天
+            const message: Message = { 
+              id: uuid(), 
+              role: 'assistant', 
+              content: result.message, 
+              createdAt: Date.now() 
+            };
+            updateMessages(targetChat.id, (prev) => [...prev, message]);
+            setChats((prev) => prev.map((c) => 
+              c.id === targetChat.id ? { ...c, lastMessage: result.message } : c
+            ));
+            // 如果不在该聊天页，加入未读
+            if (selectedChatId !== targetChat.id || screen !== 'chat') {
+              setUnreadMessages((prev) => ({
+                ...prev,
+                [targetChat.id]: [...(prev[targetChat.id] || []), message],
+              }));
+            }
+          }
+        }
+      } catch (e) {
+        // 静默失败，不影响用户体验
+        console.debug('轮询主动消息失败:', e);
+      }
+    };
+
+    const intervalId = setInterval(pollProactiveMessages, 30000); // 30秒
+    pollProactiveMessages(); // 立即执行一次
+    
+    return () => clearInterval(intervalId);
+  }, [chats, roles, selectedChatId, screen]);
+
   const handleNav = (target: Screen) => setScreen(target);
 
   const addChat = () => {
@@ -294,15 +352,63 @@ const App: React.FC = () => {
   };
 
   // 推送助手消息，如果用户不在该聊天页则加入未读
-  const pushAssistantChunkWithUnread = (chatId: string, content: string) => {
-    const message: Message = { id: uuid(), role: 'assistant', content, createdAt: Date.now() };
+  const pushAssistantChunkWithUnread = async (chatId: string, content: string) => {
+    // 解析REMINDER指令
+    const reminder = parseReminderFromText(content);
+    if (reminder) {
+      console.log('🔔 检测到REMINDER指令:', reminder);
+      createReminder('default_user', reminder.content, reminder.time)
+        .then(() => console.log('✅ 闹钟创建成功'))
+        .catch(e => console.warn('❌ 闹钟创建失败:', e));
+    }
+    
+    // 解析EXPENSE指令
+    const expense = parseExpenseFromText(content);
+    if (expense) {
+      console.log('💰 检测到EXPENSE指令:', expense);
+      addExpense(expense.amount, expense.category, expense.description)
+        .then(() => console.log('✅ 记账成功'))
+        .catch(e => console.warn('❌ 记账失败:', e));
+    }
+    
+    // 解析SEARCH指令并执行搜索
+    const searchQuery = parseSearchFromText(content);
+    if (searchQuery) {
+      console.log('🔍 检测到SEARCH指令:', searchQuery);
+      try {
+        const searchResult = await webSearch(searchQuery);
+        if (searchResult.success && searchResult.results?.length) {
+          const searchSummary = searchResult.results
+            .map((r, i) => `${i + 1}. ${r.title}${r.snippet ? ': ' + r.snippet : ''}`)
+            .join('\n');
+          // 将搜索结果作为新消息推送
+          const searchMessage: Message = { 
+            id: uuid(), 
+            role: 'assistant', 
+            content: `🔍 搜索结果:\n${searchSummary}`, 
+            createdAt: Date.now() 
+          };
+          updateMessages(chatId, (prev) => [...prev, searchMessage]);
+        }
+      } catch (e) {
+        console.warn('❌ 搜索失败:', e);
+      }
+    }
+    
+    // 移除所有指令后的干净文本
+    let cleanContent = removeReminderFromText(content);
+    cleanContent = removeExpenseFromText(cleanContent);
+    cleanContent = removeSearchFromText(cleanContent);
+    if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
+    
+    const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, message]);
-    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: content } : c)));
+    setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: cleanContent } : c)));
     
     // 存储AI回复到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
-    storeMemory(content, 'chat', { 
+    storeMemory(cleanContent, 'chat', { 
       chatId, 
       role: 'assistant',
       roleName: role?.name || '未知角色'
