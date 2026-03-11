@@ -1074,26 +1074,58 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         {/* 问候语区域 - 包含流体球 */}
         <div className="pl-[30px] pr-4 mb-8">
           <div className="flex items-start gap-4">
-            {/* 流体球 AI 助手 */}
+            {/* 线条三角形 AI 助手 */}
             {homeAssistantRole && (
               <div 
                 className="relative flex-shrink-0 cursor-pointer group"
                 onClick={() => setShowAssistantChat(!showAssistantChat)}
               >
-                {/* 流体球动画背景 */}
-                <div className="absolute inset-0 rounded-full bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 opacity-60 blur-md animate-pulse"></div>
-                {/* 头像容器 */}
-                <div className="relative w-14 h-14 rounded-full bg-gradient-to-br from-cyan-400/80 to-blue-500/80 border-2 border-white/60 overflow-hidden shadow-lg group-hover:scale-110 transition-transform">
-                  {homeAssistantRole.avatar ? (
-                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="assistant" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white text-lg font-bold">
-                      {homeAssistantRole.name.charAt(0)}
-                    </div>
-                  )}
+                {/* 三角形容器 */}
+                <div className="relative w-14 h-14 group-hover:scale-110 transition-transform">
+                  {/* 动态线条三角形 SVG */}
+                  <svg viewBox="0 0 100 100" className="w-full h-full">
+                    {/* 外层发光效果 */}
+                    <defs>
+                      <linearGradient id="triangleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#22d3ee" />
+                        <stop offset="50%" stopColor="#3b82f6" />
+                        <stop offset="100%" stopColor="#a855f7" />
+                      </linearGradient>
+                      <filter id="glow">
+                        <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+                        <feMerge>
+                          <feMergeNode in="coloredBlur"/>
+                          <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                      </filter>
+                    </defs>
+                    {/* 三角形路径 - 流动线条效果 */}
+                    <path 
+                      d="M50 10 L90 80 L10 80 Z" 
+                      fill="none" 
+                      stroke="url(#triangleGradient)" 
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      filter="url(#glow)"
+                      className="animate-pulse"
+                    />
+                    {/* 内层三角形 */}
+                    <path 
+                      d="M50 25 L78 70 L22 70 Z" 
+                      fill="none" 
+                      stroke="url(#triangleGradient)" 
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity="0.6"
+                    />
+                    {/* 中心点 */}
+                    <circle cx="50" cy="55" r="4" fill="url(#triangleGradient)" className="animate-pulse" />
+                  </svg>
                 </div>
                 {/* 在线指示点 */}
-                <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-green-400 rounded-full border-2 border-white shadow-sm"></div>
+                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-white shadow-sm"></div>
               </div>
             )}
             
@@ -1125,20 +1157,23 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
           </div>
         </div>
 
-        {/* 流体球小聊天窗口 */}
+        {/* AI助手小聊天窗口 */}
         {showAssistantChat && homeAssistantRole && (
           <div className="absolute top-[90px] left-4 right-4 z-40 glass rounded-2xl shadow-2xl overflow-hidden border border-white/30">
             {/* 聊天窗口头部 */}
             <div className="flex items-center justify-between p-3 border-b border-white/20 bg-white/20">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 overflow-hidden">
-                  {homeAssistantRole.avatar ? (
-                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white text-sm font-bold">
-                      {homeAssistantRole.name.charAt(0)}
-                    </div>
-                  )}
+                {/* 小三角形图标 */}
+                <div className="w-8 h-8">
+                  <svg viewBox="0 0 100 100" className="w-full h-full">
+                    <defs>
+                      <linearGradient id="smallTriGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#22d3ee" />
+                        <stop offset="100%" stopColor="#3b82f6" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M50 15 L85 75 L15 75 Z" fill="none" stroke="url(#smallTriGrad)" strokeWidth="4" strokeLinejoin="round" />
+                  </svg>
                 </div>
                 <span className="text-sm font-medium text-slate-700">{homeAssistantRole.name}</span>
               </div>
