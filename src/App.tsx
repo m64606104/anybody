@@ -1174,9 +1174,10 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
               ) : (
                 assistantMessages.slice(-10).map((m) => (
                   <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                    <div className={`max-w-[80%] px-3 py-1.5 rounded-xl text-sm ${m.role === 'assistant' ? 'bg-white/70 text-slate-700' : 'bg-slate-700 text-white'}`}>
-                      {m.content}
-                    </div>
+                    <div 
+                      className={`max-w-[80%] px-3 py-1.5 rounded-xl text-sm ${m.role === 'assistant' ? 'bg-white/70 text-slate-700' : 'bg-slate-700 text-white'}`}
+                      dangerouslySetInnerHTML={{ __html: m.content }}
+                    />
                   </div>
                 ))
               )}
@@ -1485,9 +1486,8 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             <div 
               className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
               onClick={() => deleteMode && toggleMessageSelection(m.id)}
-            >
-              {m.content}
-            </div>
+              dangerouslySetInnerHTML={{ __html: m.content }}
+            />
           </div>
         ))}
         <div ref={messagesEndRef} />
