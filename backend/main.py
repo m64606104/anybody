@@ -12,6 +12,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -100,6 +101,9 @@ class BarkPush(BaseModel):
     title: str
     body: str
     url: Optional[str] = None  # 点击跳转URL
+    sound: Optional[str] = "shake"  # 铃声：shake, alarm, etc
+    is_archive: bool = True  # 是否保存通知
+    group: Optional[str] = None  # 通知分组
 
 # ============ 工具函数 ============
 async def get_embedding(text: str) -> Optional[List[float]]:
@@ -850,9 +854,21 @@ async def send_bark_push(push: BarkPush):
     
     try:
         async with httpx.AsyncClient() as client:
-            url = f"https://api.day.app/{BARK_KEY}/{push.title}/{push.body}"
+            # 构建URL参数
+            params = []
+            if push.sound:
+                params.append(f"sound={push.sound}")
+            if push.is_archive:
+                params.append("isArchive=1")
+            if push.group:
+                params.append(f"group={quote(push.group)}")
             if push.url:
-                url += f"?url={push.url}"
+                params.append(f"url={quote(push.url)}")
+            
+            # 构建完整URL
+            url = f"https://api.day.app/{BARK_KEY}/{quote(push.title)}/{quote(push.body)}"
+            if params:
+                url += "?" + "&".join(params)
             
             resp = await client.get(url, timeout=10.0)
             if resp.status_code == 200:
