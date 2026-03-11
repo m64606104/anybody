@@ -6,6 +6,7 @@ AI Assistant Backend Service
 """
 import os
 import re
+import json
 import asyncio
 import random
 from datetime import datetime, timedelta
@@ -79,6 +80,26 @@ class CalendarEventCreate(BaseModel):
     end_time: Optional[datetime] = None
     description: Optional[str] = None
     is_all_day: bool = False
+
+# iOS快捷指令接口模型
+class WechatData(BaseModel):
+    app: str = "微信"  # App名称
+    content: str  # 屏幕文字内容
+    sender: Optional[str] = None  # 发送者（如果能识别）
+    screenshot_base64: Optional[str] = None  # 截图Base64（可选）
+
+class GPSData(BaseModel):
+    latitude: float
+    longitude: float
+    address: Optional[str] = None  # 地址描述
+    battery: Optional[int] = None  # 电量百分比
+    app: Optional[str] = None  # 当前运行的App
+    screen_on: bool = True  # 屏幕是否亮着
+
+class BarkPush(BaseModel):
+    title: str
+    body: str
+    url: Optional[str] = None  # 点击跳转URL
 
 # ============ 工具函数 ============
 async def get_embedding(text: str) -> Optional[List[float]]:
@@ -707,6 +728,154 @@ async def get_today_schedule():
     today_events.sort(key=lambda x: x.get("start_time", ""))
     
     return {"date": str(today), "schedule": today_events}
+
+# ============ iOS快捷指令接口 ============
+BARK_KEY = os.getenv("BARK_KEY", "")  # Bark推送Key
+
+@app.post("/api/wechat")
+async def receive_wechat_data(data: WechatData):
+    """接收iOS快捷指令发送的屏幕内容/微信消息"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    print(f"📱 收到{data.app}数据: {data.content[:100]}...")
+    
+    # 存入memories表
+    memory_data = {
+        "type": "screen_capture",
+        "content": data.content,
+        "metadata": {
+            "app": data.app,
+            "sender": data.sender,
+            "has_screenshot": bool(data.screenshot_base64),
+            "captured_at": datetime.utcnow().isoformat()
+        },
+        "is_important": False
+    }
+    
+    result = supabase.table("memories").insert(memory_data).execute()
+    
+    # 让AI分析内容，提取重要信息
+    try:
+        analysis = await call_ai(
+            system_prompt="""你是一个信息分析助手。分析用户手机屏幕捕获的内容，提取重要信息。
+如果发现以下类型的重要信息，请标注：
+- 用户偏好（喜欢/讨厌什么）
+- 待办事项或约定
+- 账单/消费信息
+- 重要联系人消息
+
+用JSON格式回复：
+{"important": true/false, "category": "preference/todo/expense/message/other", "summary": "简短总结", "action": "建议的后续动作（可选）"}
+
+如果内容不重要（如广告、无意义内容），返回：{"important": false}""",
+            user_message=f"App: {data.app}\n内容: {data.content}"
+        )
+        
+        # 解析AI分析结果
+        try:
+            analysis_result = json.loads(analysis)
+            if analysis_result.get("important"):
+                # 存入重要记忆
+                important_memory = {
+                    "type": "user_insight",
+                    "content": analysis_result.get("summary", data.content[:200]),
+                    "metadata": {
+                        "category": analysis_result.get("category"),
+                        "source_app": data.app,
+                        "action": analysis_result.get("action"),
+                        "analyzed_at": datetime.utcnow().isoformat()
+                    },
+                    "is_important": True
+                }
+                supabase.table("memories").insert(important_memory).execute()
+                print(f"⭐ 发现重要信息: {analysis_result.get('summary')}")
+        except json.JSONDecodeError:
+            pass
+            
+    except Exception as e:
+        print(f"⚠️ AI分析失败: {e}")
+    
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+@app.post("/api/gps")
+async def receive_gps_data(data: GPSData):
+    """接收iOS快捷指令发送的位置数据"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    print(f"📍 收到位置: {data.latitude}, {data.longitude} | 电量: {data.battery}%")
+    
+    # 存入memories表（用type=gps_history区分）
+    gps_data = {
+        "type": "gps_history",
+        "content": data.address or f"({data.latitude}, {data.longitude})",
+        "metadata": {
+            "latitude": data.latitude,
+            "longitude": data.longitude,
+            "address": data.address,
+            "battery": data.battery,
+            "app": data.app,
+            "screen_on": data.screen_on,
+            "recorded_at": datetime.utcnow().isoformat()
+        },
+        "is_important": False
+    }
+    
+    result = supabase.table("memories").insert(gps_data).execute()
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+@app.get("/api/gps/latest")
+async def get_latest_gps():
+    """获取最新位置"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "gps_history")\
+        .order("created_at", desc=True)\
+        .limit(1)\
+        .execute()
+    
+    if result.data:
+        return {"found": True, "location": result.data[0]}
+    return {"found": False}
+
+@app.post("/api/bark/push")
+async def send_bark_push(push: BarkPush):
+    """通过Bark发送推送通知到iPhone"""
+    if not BARK_KEY:
+        raise HTTPException(status_code=500, detail="Bark key not configured")
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            url = f"https://api.day.app/{BARK_KEY}/{push.title}/{push.body}"
+            if push.url:
+                url += f"?url={push.url}"
+            
+            resp = await client.get(url, timeout=10.0)
+            if resp.status_code == 200:
+                return {"success": True}
+            return {"success": False, "error": resp.text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/insights")
+async def get_user_insights(limit: int = 10):
+    """获取用户洞察（重要记忆）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "user_insight")\
+        .eq("is_important", True)\
+        .order("created_at", desc=True)\
+        .limit(limit)\
+        .execute()
+    
+    return {"insights": result.data}
 
 # ============ 健康检查 ============
 @app.get("/health")
