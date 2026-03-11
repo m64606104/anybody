@@ -708,7 +708,7 @@ async def get_pending_proactive_messages():
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 获取最近5分钟内的主动消息
+    # 获取最近5分钟内未读的主动消息
     five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
     
     result = supabase.table("memories")\
@@ -720,7 +720,17 @@ async def get_pending_proactive_messages():
         .execute()
     
     if result.data:
-        return {"has_message": True, "message": result.data[0]["content"]}
+        msg = result.data[0]
+        # 检查是否已读
+        metadata = msg.get("metadata") or {}
+        if metadata.get("is_read"):
+            return {"has_message": False}
+        
+        # 标记为已读
+        metadata["is_read"] = True
+        supabase.table("memories").update({"metadata": metadata}).eq("id", msg["id"]).execute()
+        
+        return {"has_message": True, "message": msg["content"], "id": msg["id"]}
     return {"has_message": False}
 
 # ============ 联网搜索 ============
