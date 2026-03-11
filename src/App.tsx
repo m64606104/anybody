@@ -473,7 +473,7 @@ ${rolePrompt || '（无特定角色设定）'}
         body: JSON.stringify({
           model: apiSettings.model,
           messages: apiMessages,
-          response_format: { type: 'json_object' },
+          // 移除response_format，避免某些模型重复输出
         }),
       });
 
