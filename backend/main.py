@@ -163,7 +163,7 @@ async def lifespan(app: FastAPI):
     
     # 启动定时任务
     scheduler.add_job(check_reminders, 'interval', minutes=1, id='reminder_checker')
-    scheduler.add_job(summarize_notifications, 'interval', minutes=30, id='notification_summarizer')
+    # summarize_notifications已删除（iOS不需要MacroDroid通知总结）
     scheduler.add_job(proactive_thinking, 'interval', minutes=5, id='proactive_thinker')  # 每5分钟检查，实际执行由内部随机逻辑控制
     scheduler.start()
     print("✅ Scheduler started")
@@ -1058,7 +1058,6 @@ async def load_sync_data():
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     try:
-        # 不用single()，用limit(1)避免无数据时报错
         result = supabase.table("user_sync")\
             .select("*")\
             .eq("user_id", USER_ID)\
@@ -1116,32 +1115,28 @@ async def sync_single_message(chat_id: str, message: dict):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    try:
-        # 获取当前数据
-        result = supabase.table("user_sync")\
-            .select("messages")\
-            .eq("user_id", USER_ID)\
-            .limit(1)\
-            .execute()
-        
-        messages = result.data[0].get("messages", {}) if result.data else {}
-        
-        # 添加新消息
-        if chat_id not in messages:
-            messages[chat_id] = []
-        messages[chat_id].append(message)
-        
-        # 更新
-        supabase.table("user_sync").upsert({
-            "user_id": USER_ID,
-            "messages": messages,
-            "updated_at": datetime.utcnow().isoformat()
-        }, on_conflict="user_id").execute()
-        
-        return {"success": True}
-    except Exception as e:
-        print(f"⚠️ 同步消息失败: {e}")
-        return {"success": False, "error": str(e)}
+    # 获取当前数据
+    result = supabase.table("user_sync")\
+        .select("messages")\
+        .eq("user_id", USER_ID)\
+        .single()\
+        .execute()
+    
+    messages = result.data.get("messages", {}) if result.data else {}
+    
+    # 添加新消息
+    if chat_id not in messages:
+        messages[chat_id] = []
+    messages[chat_id].append(message)
+    
+    # 更新
+    supabase.table("user_sync").upsert({
+        "user_id": USER_ID,
+        "messages": messages,
+        "updated_at": datetime.utcnow().isoformat()
+    }, on_conflict="user_id").execute()
+    
+    return {"success": True}
 
 # ============ 健康检查 ============
 @app.get("/health")
