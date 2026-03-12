@@ -198,9 +198,21 @@ async def proactive_thinking():
     winner, msg = None, None
     for role in roles:
         sp = build_role_prompt(role)
-        sys = f"{sp}\n只输出PASS或MESSAGE:内容" if sp else "只输出PASS或MESSAGE:内容"
+        # 系统提示词与聊天对齐，让AI知道所有可用信息
+        sys_prompt = f"""{sp}
+
+## 可用能力
+- 记忆库：上面已提供最近记忆
+- 闹钟：可以用[REMINDER:时间|内容]设置
+- 记账：可以用[EXPENSE:金额|分类|描述]记录
+- Bark推送：消息会自动推送到用户手机
+- HTML渲染：可以输出HTML代码
+
+## 输出格式
+- 不发消息回复PASS
+- 发消息回复MESSAGE:内容（内容可以包含HTML）"""
         try:
-            dec = (await call_ai(sys, prompt)).strip()
+            dec = (await call_ai(sys_prompt, prompt)).strip()
             if dec.upper().startswith("MESSAGE:"):
                 winner, msg = role, dec[8:].strip()
                 if role.get("id") == active: break
