@@ -162,18 +162,33 @@ async def proactive_thinking():
     time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
     env = f"时间：{time_str}\n位置：{gps[0].get('address','未知') if gps else '未知'}\n电量：{gps[0].get('battery','?') if gps else '?'}%"
     chat_ctx = "\n".join([c["content"][:80] for c in chats]) or "无"
+    # 获取待办事项
+    reminders = supabase.table("reminders").select("content,remind_at").eq("is_done", False).order("remind_at").limit(5).execute().data or []
+    reminder_ctx = "\n".join([f"- {r['content']} ({r['remind_at']})" for r in reminders]) if reminders else "无"
+    
+    # 获取最近记忆
+    memories = supabase.table("memories").select("content").order("created_at", desc=True).limit(10).execute().data or []
+    mem_ctx = "\n".join([m["content"][:60] for m in memories]) if memories else "无"
+    
     prompt = f"""{env}
 
 【用户画像】
 {persona or '无'}
 
+【待办事项】
+{reminder_ctx}
+
+【最近记忆】
+{mem_ctx}
+
 【最近聊天】
 {chat_ctx}
 
 ---
-根据时间、位置、画像判断用户当前状态。
-- 如果觉得现在不适合打扰，回复PASS
-- 如果想说点什么，回复MESSAGE:你想说的内容"""
+根据以上信息判断是否发消息。
+可选话题：待办提醒、位置相关、时间相关、记忆中的事、新话题、关心近况等。
+- 不发消息回复PASS
+- 发消息回复MESSAGE:内容"""
     
     roles = get_all_roles()
     if not roles: return
@@ -381,15 +396,20 @@ async def chat_send(req: ChatSendRequest):
 - 记账：分类有food/transport/shopping/entertainment/other
 - Bark推送：回复会自动推送到用户手机
 - 位置感知：上面已提供当前位置和电量
+- HTML渲染：你可以直接输出HTML代码，会在聊天中渲染显示
+- 代码生成：用户让你写代码时直接输出，用```包裹
 
 ## 特殊指令格式（在回复中使用，系统会自动执行）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 记账：[EXPENSE:50|food|午餐]
 - 推送通知：[BARK:标题|内容|分组名|图标URL]
-  - 分组名可选，用于在手机上分组显示
-  - 图标URL可选，自定义推送图标
 
-请直接回复，不要输出JSON格式。"""
+## HTML示例
+如果用户要求生成网页/交互内容，可以直接输出HTML：
+<div style="padding:10px;background:#f0f0f0;border-radius:8px">内容</div>
+<button onclick="alert('点击')">按钮</button>
+
+请直接回复。"""
 
     # 5. 构建消息历史
     messages = [{"role": "system", "content": system_prompt}]
