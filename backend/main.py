@@ -168,9 +168,16 @@ def get_all_context():
     memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(20).execute().data or []
     mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:50]}" for m in memories]) if memories else "无"
     
-    # 最近聊天
+    # 最近聊天（包含时间，让AI知道消息间隔）
     chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(20).execute().data or []
-    chat_list = "\n".join([f"[{c['sender']}] {c['content'][:80]}" for c in reversed(chats)]) if chats else "无"
+    def format_chat_time(created_at):
+        try:
+            t = datetime.fromisoformat(created_at.replace("Z", "+00:00").replace("+00:00", ""))
+            t_beijing = t + timedelta(hours=8)
+            return t_beijing.strftime("%m/%d %H:%M")
+        except:
+            return ""
+    chat_list = "\n".join([f"[{format_chat_time(c['created_at'])}] [{c['sender']}] {c['content'][:80]}" for c in reversed(chats)]) if chats else "无"
     
     # 最近支出
     expenses = supabase.table("expenses").select("amount,category,description,date").order("created_at", desc=True).limit(10).execute().data or []
@@ -516,24 +523,43 @@ async def chat_send(req: ChatSendRequest):
 
 请直接回复。"""
 
-    # 5. 构建消息历史
+    # 5. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]
     if req.history:
         for h in req.history[-20:]:  # 最多20条历史
             messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-    messages.append({"role": "user", "content": req.message})
     
-    # 6. 调用AI
+    # 检查用户消息是否包含图片（dataURL格式）
+    import re
+    img_pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>'
+    img_matches = re.findall(img_pattern, req.message)
+    
+    if img_matches:
+        # 有图片，使用vision格式
+        content_parts = []
+        # 提取纯文本（去掉img标签）
+        text_only = re.sub(img_pattern, '', req.message).strip()
+        if text_only:
+            content_parts.append({"type": "text", "text": text_only})
+        # 添加图片
+        for img_url in img_matches:
+            content_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+        messages.append({"role": "user", "content": content_parts})
+    else:
+        messages.append({"role": "user", "content": req.message})
+    
+    # 6. 调用AI（有图片时使用vision模型）
+    model = "gpt-4o" if img_matches else OPENAI_MODEL  # 有图片用gpt-4o
     try:
         async with httpx.AsyncClient() as c:
             resp = await c.post(
                 f"{OPENAI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"model": OPENAI_MODEL, "messages": messages},
-                timeout=60.0
+                json={"model": model, "messages": messages, "max_tokens": 4096},
+                timeout=120.0  # 图片识别可能需要更长时间
             )
             if resp.status_code != 200:
-                raise Exception(f"AI API error: {resp.status_code}")
+                raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
             ai_reply = resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         ai_reply = f"调用AI失败：{str(e)}"
@@ -622,6 +648,53 @@ async def get_chat_messages(chat_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail="Supabase not configured")
     r = supabase.table("chat_messages").select("*").eq("chat_id", chat_id).order("created_at", desc=False).limit(limit).execute()
     return {"messages": r.data or []}
+
+@app.post("/chat/delete")
+async def delete_chat_messages(data: dict):
+    """删除聊天消息"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    chat_id = data.get("chat_id")
+    contents = data.get("contents", [])  # 要删除的消息内容列表
+    
+    deleted = 0
+    for content in contents:
+        try:
+            r = supabase.table("chat_messages").delete().eq("chat_id", chat_id).eq("content", content).execute()
+            if r.data:
+                deleted += len(r.data)
+        except Exception as e:
+            print(f"⚠️ 删除消息失败: {e}")
+    
+    print(f"🗑️ 删除了 {deleted} 条聊天消息")
+    return {"success": True, "deleted": deleted}
+
+@app.post("/chat/import")
+async def import_chat_messages(data: dict):
+    """导入聊天消息到Supabase（让AI能看到）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    chat_id = data.get("chat_id")
+    role_id = data.get("role_id")
+    messages = data.get("messages", [])  # [{role, content, id}]
+    
+    imported = 0
+    for msg in messages:
+        try:
+            supabase.table("chat_messages").insert({
+                "chat_id": chat_id,
+                "role_id": role_id,
+                "sender": msg.get("role", "user"),
+                "content": msg.get("content", "")
+            }).execute()
+            imported += 1
+        except Exception as e:
+            print(f"⚠️ 导入消息失败: {e}")
+    
+    print(f"📥 导入了 {imported} 条聊天消息")
+    return {"success": True, "imported": imported}
 
 @app.get("/chat/latest")
 async def get_latest_reply(chat_id: str):

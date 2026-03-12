@@ -593,6 +593,39 @@ export async function getLatestReply(chatId: string): Promise<{
 }
 
 /**
+ * 删除聊天消息
+ */
+export async function deleteChatMessages(
+  chatId: string,
+  contents: string[]
+): Promise<{ success: boolean; deleted: number }> {
+  const resp = await fetch(`${API_BASE_URL}/chat/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, contents }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 导入聊天消息到Supabase（让AI能看到）
+ */
+export async function importChatMessages(
+  chatId: string,
+  roleId: string | undefined,
+  messages: { role: string; content: string }[]
+): Promise<{ success: boolean; imported: number }> {
+  const resp = await fetch(`${API_BASE_URL}/chat/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, role_id: roleId, messages }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
  * 推送Bark通知
  */
 export async function sendBarkNotification(

@@ -23,7 +23,9 @@ import {
   loadSyncData,
   saveSyncData,
   syncMessage,
-  sendChatMessage
+  sendChatMessage,
+  deleteChatMessages,
+  importChatMessages
 } from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
@@ -632,15 +634,14 @@ const App: React.FC = () => {
     if (confirm(`确定删除 ${selectedMessages.size} 条消息？`)) {
       // 获取要删除的消息内容
       const messagesToDelete = (messagesMap[currentChat.id] || []).filter((m) => selectedMessages.has(m.id));
+      const contents = messagesToDelete.map(m => m.content);
       
-      // 同步删除Supabase中的记录
-      for (const msg of messagesToDelete) {
-        try {
-          await deleteMemoryByContent(msg.content);
-          console.log('🗑️ 已从Supabase删除:', msg.content.slice(0, 50));
-        } catch (e) {
-          console.warn('⚠️ Supabase删除失败:', e);
-        }
+      // 同步删除Supabase中的聊天记录
+      try {
+        const result = await deleteChatMessages(currentChat.id, contents);
+        console.log('🗑️ 已从Supabase删除:', result.deleted, '条消息');
+      } catch (e) {
+        console.warn('⚠️ Supabase删除失败:', e);
       }
       
       // 删除本地消息
@@ -713,12 +714,26 @@ const App: React.FC = () => {
 
   const importChatHistory = (file: File, chatId: string) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const data = JSON.parse(reader.result as string);
         if (data.messages && Array.isArray(data.messages)) {
+          // 更新本地消息
           setMessagesMap((prev) => ({ ...prev, [chatId]: data.messages }));
-          alert('聊天记录导入成功（已覆盖）！');
+          
+          // 同步到Supabase（让AI能看到）
+          const chat = chats.find(c => c.id === chatId);
+          try {
+            const result = await importChatMessages(
+              chatId,
+              chat?.roleId,
+              data.messages.map((m: Message) => ({ role: m.role, content: m.content }))
+            );
+            alert(`聊天记录导入成功！已同步 ${result.imported} 条到云端，AI可以看到这些记录了。`);
+          } catch (e) {
+            console.warn('⚠️ 同步到Supabase失败:', e);
+            alert('聊天记录导入成功（本地），但同步到云端失败，AI可能看不到这些记录。');
+          }
         } else {
           alert('导入失败，文件格式错误');
         }
@@ -732,6 +747,27 @@ const App: React.FC = () => {
   const handleHomeClick = (action: HomeApp['action']) => {
     if (action === 'social') handleNav('chatList');
     if (action === 'settings') handleNav('settings');
+  };
+
+  // 同步本地聊天记录到云端（让AI能看到）
+  const syncLocalChatToCloud = async (chatId: string) => {
+    const messages = messagesMap[chatId] || [];
+    if (messages.length === 0) {
+      alert('当前聊天没有消息');
+      return;
+    }
+    const chat = chats.find(c => c.id === chatId);
+    try {
+      const result = await importChatMessages(
+        chatId,
+        chat?.roleId,
+        messages.map(m => ({ role: m.role, content: m.content }))
+      );
+      alert(`同步成功！已上传 ${result.imported} 条消息到云端，AI现在可以看到这些记录了。`);
+    } catch (e) {
+      console.error('同步失败:', e);
+      alert('同步失败，请稍后重试');
+    }
   };
 
   const reorderHomeApps = (fromId: string, toId: string) => {
@@ -1091,6 +1127,7 @@ const App: React.FC = () => {
           onExportChat={exportChatHistory}
           onImportChat={importChatHistory}
           onDeleteRole={deleteRole}
+          onSyncToCloud={syncLocalChatToCloud}
         />
       )}
     </div>
@@ -1298,9 +1335,10 @@ type RolePanelProps = {
   onExportChat: (chatId: string) => void;
   onImportChat: (file: File, chatId: string) => void;
   onDeleteRole: (roleId: string) => void;
+  onSyncToCloud: (chatId: string) => void;
 };
 
-const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId, onClose, onSave, onChatSettingsSave, onAvatarUpload, onExportChat, onImportChat, onDeleteRole }) => {
+const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId, onClose, onSave, onChatSettingsSave, onAvatarUpload, onExportChat, onImportChat, onDeleteRole, onSyncToCloud }) => {
   const [draft, setDraft] = useState<Role>(role);
   const [chatDraft, setChatDraft] = useState<ChatSettings>(chatSettings);
   const [activeTab, setActiveTab] = useState<'role' | 'chat' | 'history'>('role');
@@ -1530,6 +1568,18 @@ const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId
                     />
                   </label>
                 </div>
+              </div>
+              <div className="rounded-2xl border border-amber-200/50 bg-amber-50/50 p-3 space-y-2">
+                <p className="text-xs text-amber-700">⚠️ 本地聊天记录AI看不到？点击下方按钮同步到云端</p>
+                <button 
+                  className="btn w-full bg-amber-500 text-white hover:bg-amber-600"
+                  onClick={() => onSyncToCloud(currentChatId)}
+                >
+                  <svg className="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                  同步本地记录到云端
+                </button>
               </div>
             </div>
             <div className="flex gap-2 pt-4 border-t border-white/20">
