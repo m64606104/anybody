@@ -798,15 +798,22 @@ async def chat_send(req: ChatSendRequest):
     # 7. 调用AI（支持多轮工具调用）
     model = "gpt-4o" if img_matches else OPENAI_MODEL
     ai_reply = ""
-    max_tool_calls = 5  # 最多5轮工具调用
+    max_tool_calls = 3  # 最多3轮工具调用
     
     try:
-        for _ in range(max_tool_calls):
+        for round_num in range(max_tool_calls):
             async with httpx.AsyncClient() as c:
+                # 构建请求参数
+                request_json = {"model": model, "messages": messages, "max_tokens": 4096}
+                # 只有第一轮才传tools，避免无限循环
+                if round_num == 0:
+                    request_json["tools"] = tools
+                    request_json["tool_choice"] = "auto"
+                
                 resp = await c.post(
                     f"{OPENAI_BASE_URL}/chat/completions",
                     headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json={"model": model, "messages": messages, "tools": tools, "max_tokens": 4096},
+                    json=request_json,
                     timeout=120.0
                 )
                 if resp.status_code != 200:
@@ -820,7 +827,10 @@ async def chat_send(req: ChatSendRequest):
                     messages.append(msg)  # 添加助手消息（包含工具调用）
                     for tool_call in msg["tool_calls"]:
                         func_name = tool_call["function"]["name"]
-                        func_args = json.loads(tool_call["function"]["arguments"])
+                        try:
+                            func_args = json.loads(tool_call["function"]["arguments"])
+                        except:
+                            func_args = {}
                         print(f"🔧 AI调用工具: {func_name}({func_args})")
                         tool_result = execute_tool(func_name, func_args)
                         messages.append({
@@ -828,15 +838,28 @@ async def chat_send(req: ChatSendRequest):
                             "tool_call_id": tool_call["id"],
                             "content": tool_result
                         })
+                    # 工具调用后继续循环，让AI根据工具结果生成回复
                 else:
                     # 没有工具调用，返回最终回复
                     ai_reply = msg.get("content", "")
                     break
         
         if not ai_reply:
-            ai_reply = "处理超时，请重试"
+            # 如果循环结束还没有回复，再调用一次不带tools
+            async with httpx.AsyncClient() as c:
+                resp = await c.post(
+                    f"{OPENAI_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json={"model": model, "messages": messages, "max_tokens": 4096},
+                    timeout=60.0
+                )
+                if resp.status_code == 200:
+                    ai_reply = resp.json()["choices"][0]["message"].get("content", "")
+            if not ai_reply:
+                ai_reply = "抱歉，处理时间过长，请重试"
     except Exception as e:
         ai_reply = f"调用AI失败：{str(e)}"
+        print(f"❌ AI调用错误: {e}")
     
     # 7. 存储AI回复
     supabase.table("chat_messages").insert({
