@@ -28,14 +28,34 @@ scheduler = AsyncIOScheduler()
 
 # Models
 class GPSData(BaseModel):
-    latitude: float
-    longitude: float
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     address: Optional[str] = None
+    street: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
     battery: Optional[int] = None
     wifi: Optional[str] = None
     app: Optional[str] = None
     charging: bool = False
     screen_on: bool = True
+
+class HealthData(BaseModel):
+    # 天气
+    weather: Optional[str] = None  # 当前天气描述
+    temperature: Optional[float] = None  # 温度
+    humidity: Optional[int] = None  # 湿度
+    weather_forecast: Optional[str] = None  # 天气预报
+    # 健康
+    heart_rate: Optional[int] = None  # 心率
+    hrv: Optional[int] = None  # 心率变异性
+    steps: Optional[int] = None  # 步数
+    sleep_hours: Optional[float] = None  # 睡眠时长
+    # 月经
+    menstrual_status: Optional[str] = None  # 月经状态：period/fertile/ovulation/luteal/none
+    menstrual_day: Optional[int] = None  # 周期第几天
+    # 其他
+    note: Optional[str] = None  # 备注
 
 class ReminderCreate(BaseModel):
     content: str
@@ -117,7 +137,25 @@ def get_all_context():
     gps_info = ""
     if gps:
         g = gps[0]
-        gps_info = f"位置：{g.get('address','未知')}\n经纬度：{g.get('latitude')},{g.get('longitude')}\n电量：{g.get('battery','?')}%\n充电：{'是' if g.get('charging') else '否'}\nWiFi：{g.get('wifi','未知')}\n当前应用：{g.get('app','未知')}"
+        gps_info = f"位置：{g.get('city') or g.get('address','未知')}\n街道：{g.get('street','')}\n州/省：{g.get('state','')}\n经纬度：{g.get('latitude')},{g.get('longitude')}\n电量：{g.get('battery','?')}%\n充电：{'是' if g.get('charging') else '否'}\nWiFi：{g.get('wifi','未知')}\n当前应用：{g.get('app','未知')}"
+    
+    # 健康数据
+    health = supabase.table("health_data").select("*").order("created_at", desc=True).limit(1).execute().data
+    health_info = ""
+    if health:
+        h = health[0]
+        parts = []
+        if h.get('weather'): parts.append(f"天气：{h['weather']}")
+        if h.get('temperature'): parts.append(f"温度：{h['temperature']}°")
+        if h.get('humidity'): parts.append(f"湿度：{h['humidity']}%")
+        if h.get('weather_forecast'): parts.append(f"预报：{h['weather_forecast']}")
+        if h.get('heart_rate'): parts.append(f"心率：{h['heart_rate']}bpm")
+        if h.get('hrv'): parts.append(f"HRV：{h['hrv']}ms")
+        if h.get('steps'): parts.append(f"步数：{h['steps']}")
+        if h.get('sleep_hours'): parts.append(f"睡眠：{h['sleep_hours']}小时")
+        if h.get('menstrual_status'): parts.append(f"月经：{h['menstrual_status']}")
+        if h.get('menstrual_day'): parts.append(f"周期第{h['menstrual_day']}天")
+        health_info = "\n".join(parts)
     
     # 用户画像
     persona = get_persona()
@@ -147,6 +185,9 @@ def get_all_context():
 
 【位置与设备】
 {gps_info or '无数据'}
+
+【健康与天气】
+{health_info or '无数据'}
 
 【用户画像】
 {persona or '无'}
@@ -300,10 +341,11 @@ async def upload_gps(d: GPSData):
     """上传GPS数据，充电时触发主动消息"""
     r = supabase.table("gps_history").insert({
         "latitude": d.latitude, "longitude": d.longitude, "address": d.address,
+        "street": d.street, "city": d.city, "state": d.state,
         "battery": d.battery, "wifi": d.wifi, "app": d.app,
         "charging": d.charging, "screen_on": d.screen_on
     }).execute()
-    print(f"📍 GPS: {d.address or f'{d.latitude},{d.longitude}'} | 电量:{d.battery}% | 充电:{d.charging}")
+    print(f"📍 GPS: {d.city or d.address or f'{d.latitude},{d.longitude}'} | 电量:{d.battery}% | 充电:{d.charging}")
     
     # 充电时触发主动消息
     if d.charging:
@@ -340,6 +382,40 @@ async def upload_gps(d: GPSData):
 @app.get("/gps/latest")
 async def latest_gps():
     r = supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute()
+    return {"found": bool(r.data), "data": r.data[0] if r.data else None}
+
+@app.post("/health/upload")
+async def upload_health(d: HealthData):
+    """上传健康数据（天气、心率、步数、月经等）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    data = {
+        "weather": d.weather,
+        "temperature": d.temperature,
+        "humidity": d.humidity,
+        "weather_forecast": d.weather_forecast,
+        "heart_rate": d.heart_rate,
+        "hrv": d.hrv,
+        "steps": d.steps,
+        "sleep_hours": d.sleep_hours,
+        "menstrual_status": d.menstrual_status,
+        "menstrual_day": d.menstrual_day,
+        "note": d.note
+    }
+    # 移除None值
+    data = {k: v for k, v in data.items() if v is not None}
+    
+    r = supabase.table("health_data").insert(data).execute()
+    print(f"🏥 健康数据: 天气={d.weather} 温度={d.temperature}° 心率={d.heart_rate} 步数={d.steps} 月经={d.menstrual_status}")
+    return {"success": True, "id": r.data[0]["id"] if r.data else None}
+
+@app.get("/health/latest")
+async def latest_health():
+    """获取最新健康数据"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    r = supabase.table("health_data").select("*").order("created_at", desc=True).limit(1).execute()
     return {"found": bool(r.data), "data": r.data[0] if r.data else None}
 
 @app.post("/reminder/create")
