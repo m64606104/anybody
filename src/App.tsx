@@ -369,6 +369,7 @@ const App: React.FC = () => {
   // 每个聊天独立的缓冲区和计时器
   const chatBuffers = useRef<Record<string, string[]>>({});
   const chatTimers = useRef<Record<string, number>>({});
+  const timerWorkerRef = useRef<Worker | null>(null);
   const dragId = useRef<string | null>(null);
   const floatingDragId = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -453,6 +454,24 @@ const App: React.FC = () => {
   const updateMessages = (chatId: string, updater: (prev: Message[]) => Message[]) => {
     setMessagesMap((prev) => ({ ...prev, [chatId]: updater(prev[chatId] ?? []) }));
   };
+
+  // 初始化Web Worker（用于后台计时器，防止页面进入后台时被暂停）
+  useEffect(() => {
+    try {
+      timerWorkerRef.current = new Worker('/timer-worker.js');
+      timerWorkerRef.current.onmessage = (e) => {
+        if (e.data.action === 'flush') {
+          flushBufferForChat(e.data.chatId);
+        }
+      };
+      console.log('✅ Timer Worker 初始化成功');
+    } catch (err) {
+      console.warn('⚠️ Timer Worker 初始化失败，使用普通setTimeout:', err);
+    }
+    return () => {
+      timerWorkerRef.current?.terminate();
+    };
+  }, []);
 
   const pushAssistantChunk = (chatId: string, content: string) => {
     const message: Message = { id: uuid(), role: 'assistant', content, createdAt: Date.now() };
@@ -859,11 +878,16 @@ ${rolePrompt || '（无特定角色设定）'}
     
     console.log('  更新后缓冲区:', chatBuffers.current[chatId]);
     
-    // 重置或启动该聊天的计时器（独立运行，不受页面切换影响）
-    if (chatTimers.current[chatId]) {
-      window.clearTimeout(chatTimers.current[chatId]);
+    // 重置或启动该聊天的计时器
+    // 优先使用Web Worker（后台不会被暂停），fallback到普通setTimeout
+    if (timerWorkerRef.current) {
+      timerWorkerRef.current.postMessage({ action: 'start', chatId, delay: chatSettings.bufferMs });
+    } else {
+      if (chatTimers.current[chatId]) {
+        window.clearTimeout(chatTimers.current[chatId]);
+      }
+      chatTimers.current[chatId] = window.setTimeout(() => flushBufferForChat(chatId), chatSettings.bufferMs);
     }
-    chatTimers.current[chatId] = window.setTimeout(() => flushBufferForChat(chatId), chatSettings.bufferMs);
   };
 
   const handleSend = () => {
@@ -1960,6 +1984,26 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
               placeholder="https://api.day.app/你的key"
             />
           </label>
+          {barkUrl && (
+            <button 
+              className="btn glass text-sm"
+              onClick={async () => {
+                try {
+                  const testUrl = `${barkUrl}/Anyone测试推送/如果你收到这条消息，说明Bark配置成功！`;
+                  const resp = await fetch(testUrl);
+                  if (resp.ok) {
+                    alert('✅ 测试推送已发送，请检查手机通知');
+                  } else {
+                    alert('❌ 推送失败，请检查Bark URL是否正确');
+                  }
+                } catch (e) {
+                  alert('❌ 推送失败：' + (e as Error).message);
+                }
+              }}
+            >
+              📱 测试推送
+            </button>
+          )}
         </section>
 
         <section className="card glass p-4 space-y-3">

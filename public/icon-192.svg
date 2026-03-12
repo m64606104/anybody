@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  <rect width="192" height="192" fill="#ffffff"/>
+  <g stroke="#3b82f6" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 正方体前面 -->
+    <rect x="48" y="64" width="64" height="64" />
+    <!-- 正方体顶面 -->
+    <polygon points="48,64 80,40 144,40 112,64" />
+    <!-- 正方体右面 -->
+    <polygon points="112,64 144,40 144,104 112,128" />
+    <!-- 连接线 -->
+    <line x1="112" y1="64" x2="112" y2="128" />
+  </g>
+</svg>
