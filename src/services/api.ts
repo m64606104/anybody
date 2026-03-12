@@ -535,25 +535,25 @@ export interface SyncData {
 }
 
 /**
- * 从云端加载所有数据
+ * 从云端加载所有数据（按user_id隔离）
  */
-export async function loadSyncData(): Promise<{
+export async function loadSyncData(userId: string = 'default_user'): Promise<{
   found: boolean;
   data?: SyncData & { updated_at?: string };
 }> {
-  const resp = await fetch(`${API_BASE_URL}/sync/load`);
+  const resp = await fetch(`${API_BASE_URL}/sync/load?user_id=${encodeURIComponent(userId)}`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 保存数据到云端
+ * 保存数据到云端（按user_id隔离）
  */
-export async function saveSyncData(data: SyncData): Promise<{
+export async function saveSyncData(data: SyncData, userId: string = 'default_user'): Promise<{
   success: boolean;
   updated_at?: string;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/sync/save`, {
+  const resp = await fetch(`${API_BASE_URL}/sync/save?user_id=${encodeURIComponent(userId)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),

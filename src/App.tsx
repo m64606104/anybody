@@ -290,9 +290,9 @@ const App: React.FC = () => {
     if (!authUser) return; // 未登录不同步
     const loadFromCloud = async () => {
       try {
-        const result = await loadSyncData();
+        const result = await loadSyncData(authUser.id);
         if (result.found && result.data) {
-          console.log('☁️ 从云端加载数据:', result.data.updated_at);
+          console.log('☁️ 从云端加载数据:', result.data.updated_at, '用户:', authUser.id);
           // 合并云端数据和本地数据（避免覆盖本地新建的角色/聊天）
           const cloudData = result.data;
           if (cloudData.roles?.length) {
@@ -331,10 +331,11 @@ const App: React.FC = () => {
       }
     };
     loadFromCloud();
-  }, []);
+  }, [authUser]);
 
   // 数据变化时自动保存到云端（防抖）
   const saveToCloud = useCallback(() => {
+    if (!authUser) return; // 未登录不同步
     if (syncTimeoutRef.current) {
       window.clearTimeout(syncTimeoutRef.current);
     }
@@ -347,16 +348,16 @@ const App: React.FC = () => {
           api_settings: apiSettings,
           chat_settings: chatSettings,
           user_profile: userProfile,
-        });
+        }, authUser.id);
         setLastSyncTime(new Date().toISOString());
         setCloudSyncStatus('synced');
-        console.log('☁️ 已同步到云端');
+        console.log('☁️ 已同步到云端，用户:', authUser.id);
       } catch (e) {
         console.warn('☁️ 同步失败:', e);
         setCloudSyncStatus('error');
       }
     }, 2000); // 2秒防抖
-  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
+  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile, authUser]);
 
   // 监听数据变化，触发同步
   useEffect(() => {

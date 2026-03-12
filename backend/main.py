@@ -1382,17 +1382,17 @@ async def get_user_insights(limit: int = 10):
     return {"insights": result.data}
 
 # ============ 云端同步 ============
-USER_ID = "default_user"  # 单用户模式，固定用户ID
+# 多用户模式：通过URL参数传递user_id
 
 @app.get("/sync/load")
-async def load_sync_data():
-    """从云端加载所有数据"""
+async def load_sync_data(user_id: str = "default_user"):
+    """从云端加载所有数据（按user_id隔离）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     result = supabase.table("user_sync")\
         .select("*")\
-        .eq("user_id", USER_ID)\
+        .eq("user_id", user_id)\
         .single()\
         .execute()
     
@@ -1412,13 +1412,13 @@ async def load_sync_data():
     return {"found": False}
 
 @app.post("/sync/save")
-async def save_sync_data(data: SyncData):
-    """保存数据到云端"""
+async def save_sync_data(data: SyncData, user_id: str = "default_user"):
+    """保存数据到云端（按user_id隔离）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     # 构建更新数据
-    update_data = {"user_id": USER_ID, "updated_at": datetime.utcnow().isoformat()}
+    update_data = {"user_id": user_id, "updated_at": datetime.utcnow().isoformat()}
     if data.chats is not None:
         update_data["chats"] = data.chats
     if data.messages is not None:
