@@ -103,6 +103,69 @@ def get_persona():
         return "\n".join([f"[{x['trait_category']}]{x['trait_detail']}" for x in r.data]) if r.data else ""
     except: return ""
 
+def get_all_context():
+    """获取Supabase所有数据作为AI的资料库"""
+    if not supabase: return ""
+    
+    # 时间
+    now_beijing = datetime.utcnow() + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M:%S")
+    
+    # GPS/位置/电量
+    gps = supabase.table("gps_history").select("*").order("created_at", desc=True).limit(1).execute().data
+    gps_info = ""
+    if gps:
+        g = gps[0]
+        gps_info = f"位置：{g.get('address','未知')}\n经纬度：{g.get('latitude')},{g.get('longitude')}\n电量：{g.get('battery','?')}%\n充电：{'是' if g.get('charging') else '否'}\nWiFi：{g.get('wifi','未知')}\n当前应用：{g.get('app','未知')}"
+    
+    # 用户画像
+    persona = get_persona()
+    
+    # 待办事项（未完成）
+    reminders = supabase.table("reminders").select("content,remind_at,repeat").eq("is_done", False).order("remind_at").limit(10).execute().data or []
+    reminder_list = "\n".join([f"- {r['content']} ({r['remind_at']})" + (f" [重复:{r['repeat']}]" if r.get('repeat') else "") for r in reminders]) if reminders else "无"
+    
+    # 最近记忆
+    memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(20).execute().data or []
+    mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:50]}" for m in memories]) if memories else "无"
+    
+    # 最近聊天
+    chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(20).execute().data or []
+    chat_list = "\n".join([f"[{c['sender']}] {c['content'][:80]}" for c in reversed(chats)]) if chats else "无"
+    
+    # 最近支出
+    expenses = supabase.table("expenses").select("amount,category,description,date").order("created_at", desc=True).limit(10).execute().data or []
+    expense_list = "\n".join([f"- ¥{e['amount']} {e['category']} {e.get('description','')} ({e['date']})" for e in expenses]) if expenses else "无"
+    
+    # 最近主动消息（避免重复）
+    proactive = supabase.table("proactive_messages").select("content,created_at").order("created_at", desc=True).limit(5).execute().data or []
+    proactive_list = "\n".join([f"- {p['content'][:60]}" for p in proactive]) if proactive else "无"
+    
+    return f"""【当前时间】
+{time_str}
+
+【位置与设备】
+{gps_info or '无数据'}
+
+【用户画像】
+{persona or '无'}
+
+【待办事项】
+{reminder_list}
+
+【最近记忆】
+{mem_list}
+
+【最近支出】
+{expense_list}
+
+【最近聊天记录】
+{chat_list}
+
+【最近主动消息（避免重复）】
+{proactive_list}"""
+
 # 定时任务
 async def self_ping():
     """每10分钟自我ping，防止Render休眠"""
@@ -151,44 +214,15 @@ async def proactive_thinking():
     
     last_pt, next_int = now, random.randint(mi, ma)
     
-    # 环境
-    chats = supabase.table("chat_messages").select("content").order("created_at", desc=True).limit(10).execute().data or []
-    gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
-    persona = get_persona()
+    # 获取完整资料库
+    context = get_all_context()
     
-    # 精确时间
-    now_beijing = now + timedelta(hours=8)
-    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
-    env = f"时间：{time_str}\n位置：{gps[0].get('address','未知') if gps else '未知'}\n电量：{gps[0].get('battery','?') if gps else '?'}%"
-    chat_ctx = "\n".join([c["content"][:80] for c in chats]) or "无"
-    # 获取待办事项
-    reminders = supabase.table("reminders").select("content,remind_at").eq("is_done", False).order("remind_at").limit(5).execute().data or []
-    reminder_ctx = "\n".join([f"- {r['content']} ({r['remind_at']})" for r in reminders]) if reminders else "无"
-    
-    # 获取最近记忆
-    memories = supabase.table("memories").select("content").order("created_at", desc=True).limit(10).execute().data or []
-    mem_ctx = "\n".join([m["content"][:60] for m in memories]) if memories else "无"
-    
-    prompt = f"""{env}
-
-【用户画像】
-{persona or '无'}
-
-【待办事项】
-{reminder_ctx}
-
-【最近记忆】
-{mem_ctx}
-
-【最近聊天】
-{chat_ctx}
+    prompt = f"""{context}
 
 ---
-根据以上信息判断是否发消息。
-可选话题：待办提醒、位置相关、时间相关、记忆中的事、新话题、关心近况等。
-- 不发消息回复PASS
-- 发消息回复MESSAGE:内容"""
+以上是你的资料库，你可以自由参考任何内容。
+判断是否发消息：不发回复PASS，发回复MESSAGE:内容
+注意避免和【最近主动消息】重复。"""
     
     roles = get_all_roles()
     if not roles: return
@@ -375,27 +409,8 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取上下文（记忆、用户画像、GPS状态）
-    memories = supabase.table("memories").select("content").order("created_at", desc=True).limit(20).execute().data or []
-    persona = get_persona()
-    gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
-    
-    # 精确时间感知（北京时间）
-    now_utc = datetime.utcnow()
-    now_beijing = now_utc + timedelta(hours=8)
-    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M:%S")
-    context_parts = [f"当前时间：{time_str}"]
-    if gps:
-        if gps[0].get("address"): context_parts.append(f"用户位置：{gps[0]['address']}")
-        if gps[0].get("battery"): context_parts.append(f"手机电量：{gps[0]['battery']}%")
-    if persona:
-        context_parts.append(f"\n【用户画像】\n{persona}")
-    if memories:
-        mem_text = "\n".join([m["content"][:100] for m in memories[:10]])
-        context_parts.append(f"\n【最近记忆】\n{mem_text}")
-    
-    context = "\n".join(context_parts)
+    # 3. 获取完整资料库（与主动消息一致）
+    context = get_all_context()
     
     # 4. 构建系统提示词
     system_prompt = f"""{role_prompt}
