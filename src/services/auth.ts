@@ -6,8 +6,8 @@
 import { createClient, User, Session, AuthChangeEvent } from '@supabase/supabase-js';
 
 // Supabase 配置（从环境变量读取，或使用默认值）
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://lrovvuwqjjgsoyqcmqsh.supabase.co';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxyb3Z2dXdxampnc295cWNtcXNoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDE1MDc2NzIsImV4cCI6MjA1NzA4MzY3Mn0.bM7SdYFfCJGMSBMFfMOYBPbTT9cLTSjJGZbLOLWMzlk';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://urxfujdopjnduhgltbym.supabase.co';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVyeGZ1amRvcGpuZHVoZ2x0YnltIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMTY0NzgsImV4cCI6MjA4ODY5MjQ3OH0.YnbevcEoZQ8jTAjpfoYHSTwY7o1qyX2XTe7Gx-WuWNU';
 
 // 创建 Supabase 客户端
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
