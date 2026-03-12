@@ -144,17 +144,17 @@ body {
   .phone-shell {
     width: 100%;
     max-width: 100%;
-    height: calc(100dvh - 40px); /* 减去一些高度，让比例更协调 */
-    max-height: 85vh; /* 最大85%视口高度 */
-    border-radius: 20px;
-    margin: 20px auto;
+    height: calc(100dvh - 20px); /* 只减去少量高度 */
+    max-height: 95vh; /* 最大95%视口高度 */
+    border-radius: 16px;
+    margin: 10px auto;
     box-shadow: 0 10px 40px rgba(15, 23, 42, 0.15);
   }
   
   .phone-inner {
     height: 100%;
     max-height: 100%;
-    border-radius: 16px;
+    border-radius: 12px;
     padding: 12px;
     padding-bottom: env(safe-area-inset-bottom, 12px);
   }

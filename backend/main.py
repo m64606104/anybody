@@ -501,277 +501,31 @@ async def chat_send(req: ChatSendRequest):
     # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 定义AI可用的工具（Function Calling）- 完全自由使用
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search_chat_history",
-                "description": "搜索聊天记录。可以搜索关键词或获取历史记录。随时可用。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keyword": {"type": "string", "description": "搜索关键词，留空则获取最近记录"},
-                        "limit": {"type": "integer", "description": "返回记录数量，默认50，最大500"}
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_memories",
-                "description": "搜索记忆库中保存的信息。随时可用。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "keyword": {"type": "string", "description": "搜索关键词"},
-                        "limit": {"type": "integer", "description": "返回记录数量，默认20"}
-                    }
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "save_memory",
-                "description": "保存重要信息到记忆库。可以主动保存用户提到的重要事项、偏好、计划等。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string", "description": "要保存的内容"},
-                        "title": {"type": "string", "description": "标题/摘要"},
-                        "category": {"type": "string", "description": "分类：preference/schedule/fact/other"}
-                    },
-                    "required": ["content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "create_reminder",
-                "description": "创建待办事项或闹钟提醒。到时间会通过Bark推送到手机。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "content": {"type": "string", "description": "提醒内容"},
-                        "remind_at": {"type": "string", "description": "提醒时间，格式：2026-03-13T08:00:00"},
-                        "repeat": {"type": "string", "description": "重复：daily/weekly/monthly/none"}
-                    },
-                    "required": ["content", "remind_at"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_expense",
-                "description": "记账。记录支出。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "amount": {"type": "number", "description": "金额"},
-                        "category": {"type": "string", "description": "分类：food/transport/shopping/entertainment/other"},
-                        "description": {"type": "string", "description": "描述"}
-                    },
-                    "required": ["amount", "category"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "send_notification",
-                "description": "发送Bark推送通知到用户手机。可以主动发送提醒、问候等。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "title": {"type": "string", "description": "通知标题"},
-                        "content": {"type": "string", "description": "通知内容"},
-                        "group": {"type": "string", "description": "分组名称"},
-                        "icon": {"type": "string", "description": "图标URL（可选）"}
-                    },
-                    "required": ["title", "content"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": "联网搜索。搜索互联网获取最新信息、新闻、知识等。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "搜索关键词"}
-                    },
-                    "required": ["query"]
-                }
-            }
-        }
-    ]
-    
-    # 工具执行函数
-    def execute_tool(tool_name: str, args: dict) -> str:
-        if tool_name == "search_chat_history":
-            keyword = args.get("keyword", "")
-            limit = min(args.get("limit", 50), 500)
-            query = supabase.table("chat_messages").select("sender,content,created_at")
-            if req.role_id:
-                query = query.eq("role_id", req.role_id)
-            if keyword:
-                query = query.ilike("content", f"%{keyword}%")
-            results = query.order("created_at", desc=True).limit(limit).execute().data or []
-            if not results:
-                return f"没有找到包含'{keyword}'的聊天记录" if keyword else "没有找到聊天记录"
-            lines = []
-            for r in reversed(results):
-                try:
-                    t = datetime.fromisoformat(r['created_at'].replace("Z", ""))
-                    t_beijing = t + timedelta(hours=8)
-                    time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
-                except:
-                    time_str = ""
-                lines.append(f"[{time_str}] [{r['sender']}] {r['content'][:200]}")
-            return f"找到{len(results)}条记录：\n" + "\n".join(lines)
-        
-        elif tool_name == "search_memories":
-            keyword = args.get("keyword", "")
-            limit = min(args.get("limit", 20), 100)
-            query = supabase.table("memories").select("content,category,title,created_at")
-            if keyword:
-                query = query.ilike("content", f"%{keyword}%")
-            results = query.order("created_at", desc=True).limit(limit).execute().data or []
-            if not results:
-                return f"没有找到包含'{keyword}'的记忆" if keyword else "没有找到记忆"
-            lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in results]
-            return f"找到{len(results)}条记忆：\n" + "\n".join(lines)
-        
-        elif tool_name == "save_memory":
-            content = args.get("content", "")
-            title = args.get("title", "")
-            category = args.get("category", "other")
-            if not content:
-                return "保存失败：内容不能为空"
-            supabase.table("memories").insert({
-                "content": content,
-                "title": title,
-                "category": category
-            }).execute()
-            return f"已保存记忆：{title or content[:30]}"
-        
-        elif tool_name == "create_reminder":
-            content = args.get("content", "")
-            remind_at = args.get("remind_at", "")
-            repeat = args.get("repeat", "none")
-            if not content or not remind_at:
-                return "创建失败：内容和时间不能为空"
-            supabase.table("reminders").insert({
-                "content": content,
-                "remind_at": remind_at,
-                "repeat": repeat if repeat != "none" else None,
-                "is_done": False
-            }).execute()
-            return f"已创建提醒：{content} @ {remind_at}"
-        
-        elif tool_name == "add_expense":
-            amount = args.get("amount", 0)
-            category = args.get("category", "other")
-            description = args.get("description", "")
-            if not amount:
-                return "记账失败：金额不能为0"
-            now_beijing = datetime.utcnow() + timedelta(hours=8)
-            supabase.table("expenses").insert({
-                "amount": amount,
-                "category": category,
-                "description": description,
-                "date": now_beijing.strftime("%Y-%m-%d")
-            }).execute()
-            return f"已记账：¥{amount} {category} {description}"
-        
-        elif tool_name == "send_notification":
-            title = args.get("title", "")
-            content = args.get("content", "")
-            group = args.get("group", "AI助手")
-            icon = args.get("icon", "")
-            bark_key = os.getenv("BARK_KEY", "")
-            if not bark_key:
-                return "推送失败：未配置Bark"
-            try:
-                import urllib.parse
-                url = f"https://api.day.app/{bark_key}/{urllib.parse.quote(title)}/{urllib.parse.quote(content)}?group={urllib.parse.quote(group)}"
-                if icon:
-                    url += f"&icon={urllib.parse.quote(icon)}"
-                import requests
-                requests.get(url, timeout=10)
-                return f"已推送通知：{title}"
-            except Exception as e:
-                return f"推送失败：{str(e)}"
-        
-        elif tool_name == "web_search":
-            query = args.get("query", "")
-            if not query:
-                return "搜索失败：关键词不能为空"
-            # 使用DuckDuckGo搜索（免费无需API）
-            try:
-                import requests
-                resp = requests.get(
-                    "https://api.duckduckgo.com/",
-                    params={"q": query, "format": "json", "no_html": 1},
-                    timeout=10
-                )
-                data = resp.json()
-                results = []
-                if data.get("Abstract"):
-                    results.append(f"摘要：{data['Abstract']}")
-                if data.get("RelatedTopics"):
-                    for topic in data["RelatedTopics"][:5]:
-                        if isinstance(topic, dict) and topic.get("Text"):
-                            results.append(f"- {topic['Text'][:150]}")
-                if results:
-                    return f"搜索'{query}'的结果：\n" + "\n".join(results)
-                else:
-                    return f"搜索'{query}'没有找到相关结果，可以尝试换个关键词"
-            except Exception as e:
-                return f"搜索失败：{str(e)}"
-        
-        return "未知工具"
-    
-    # 5. 构建系统提示词
+    # 4. 构建系统提示词（不使用Function Calling，用文本指令）
     system_prompt = f"""{role_prompt}
 
 {context}
 
-## 你拥有完全的自由
-你可以随时随地使用任何工具，不需要用户明确要求。你可以：
-- 主动查询聊天记录和记忆库
-- 主动保存重要信息到记忆库
-- 主动创建提醒和待办事项
-- 主动记账
-- 主动发送通知到用户手机
-- 主动联网搜索获取信息
-- 生成任何HTML内容（互动游戏、小工具、网页等）
+## 可用能力
+- 记忆库：上面已提供最近记忆
+- 闹钟：到时间会通过Bark推送到手机
+- 记账：分类有food/transport/shopping/entertainment/other
+- Bark推送：回复会自动推送到用户手机
+- 位置感知：上面已提供当前位置和电量
+- HTML渲染：你可以直接输出HTML代码，会在聊天中渲染显示
+- 代码生成：用户让你写代码时直接输出，用```包裹
 
-你的创造力没有限制。可以设计互动游戏、记事本、小工具等任何有趣的东西。
+## 特殊指令格式（在回复中使用，系统会自动执行）
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
+- 记账：[EXPENSE:50|food|午餐]
+- 推送通知：[BARK:标题|内容|分组名|图标URL]
 
-## 可用工具（随时可用，不需要用户要求）
-- search_chat_history: 搜索聊天记录，按关键词或获取最近N条（最多500条）
-- search_memories: 搜索记忆库
-- save_memory: 保存重要信息到记忆库
-- create_reminder: 创建待办/闹钟，到时间会推送到手机
-- add_expense: 记账
-- send_notification: 发送Bark推送到用户手机
-- web_search: 联网搜索获取最新信息
+## HTML示例
+如果用户要求生成网页/交互内容，可以直接输出HTML：
+<div style="padding:10px;background:#f0f0f0;border-radius:8px">内容</div>
+<button onclick="alert('点击')">按钮</button>
 
-## HTML能力
-你可以直接输出HTML代码，会在聊天中渲染显示。可以创造：
-- 互动小游戏
-- 记事本/便签
-- 计算器等小工具
-- 任何你想到的有趣东西
-
-发挥你的创造力，给用户惊喜！"""
+请直接回复。"""
 
     # 6. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]
@@ -795,68 +549,21 @@ async def chat_send(req: ChatSendRequest):
     else:
         messages.append({"role": "user", "content": req.message})
     
-    # 7. 调用AI（支持多轮工具调用）
+    # 5. 调用AI（简单调用，不使用Function Calling）
     model = "gpt-4o" if img_matches else OPENAI_MODEL
     ai_reply = ""
-    max_tool_calls = 3  # 最多3轮工具调用
     
     try:
-        for round_num in range(max_tool_calls):
-            async with httpx.AsyncClient() as c:
-                # 构建请求参数
-                request_json = {"model": model, "messages": messages, "max_tokens": 4096}
-                # 只有第一轮才传tools，避免无限循环
-                if round_num == 0:
-                    request_json["tools"] = tools
-                    request_json["tool_choice"] = "auto"
-                
-                resp = await c.post(
-                    f"{OPENAI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json=request_json,
-                    timeout=120.0
-                )
-                if resp.status_code != 200:
-                    raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
-                
-                result = resp.json()["choices"][0]
-                msg = result["message"]
-                
-                # 检查是否有工具调用
-                if msg.get("tool_calls"):
-                    messages.append(msg)  # 添加助手消息（包含工具调用）
-                    for tool_call in msg["tool_calls"]:
-                        func_name = tool_call["function"]["name"]
-                        try:
-                            func_args = json.loads(tool_call["function"]["arguments"])
-                        except:
-                            func_args = {}
-                        print(f"🔧 AI调用工具: {func_name}({func_args})")
-                        tool_result = execute_tool(func_name, func_args)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "content": tool_result
-                        })
-                    # 工具调用后继续循环，让AI根据工具结果生成回复
-                else:
-                    # 没有工具调用，返回最终回复
-                    ai_reply = msg.get("content", "")
-                    break
-        
-        if not ai_reply:
-            # 如果循环结束还没有回复，再调用一次不带tools
-            async with httpx.AsyncClient() as c:
-                resp = await c.post(
-                    f"{OPENAI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json={"model": model, "messages": messages, "max_tokens": 4096},
-                    timeout=60.0
-                )
-                if resp.status_code == 200:
-                    ai_reply = resp.json()["choices"][0]["message"].get("content", "")
-            if not ai_reply:
-                ai_reply = "抱歉，处理时间过长，请重试"
+        async with httpx.AsyncClient() as c:
+            resp = await c.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": model, "messages": messages, "max_tokens": 4096},
+                timeout=120.0
+            )
+            if resp.status_code != 200:
+                raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
+            ai_reply = resp.json()["choices"][0]["message"].get("content", "")
     except Exception as e:
         ai_reply = f"调用AI失败：{str(e)}"
         print(f"❌ AI调用错误: {e}")
