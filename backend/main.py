@@ -150,54 +150,76 @@ async def call_ai(system_prompt: str, user_message: str = "") -> str:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
-def get_butler_role() -> Optional[dict]:
-    """从云端同步数据中获取管家角色（完整信息）"""
+def get_all_roles() -> List[dict]:
+    """从云端同步数据中获取所有角色"""
     if not supabase:
-        return None
-    
+        return []
     try:
         result = supabase.table("user_sync")\
             .select("roles")\
             .eq("user_id", "default_user")\
             .limit(1)\
             .execute()
-        
         if result.data and result.data[0].get("roles"):
-            roles = result.data[0]["roles"]
-            for role in roles:
-                if role.get("isHomeAssistant"):
-                    return role  # 返回完整角色信息
-        return None
+            return result.data[0]["roles"]
+        return []
     except Exception as e:
-        print(f"⚠️ 获取管家角色失败: {e}")
-        return None
+        print(f"⚠️ 获取角色列表失败: {e}")
+        return []
 
-def build_butler_persona(role: dict) -> str:
-    """根据角色信息构建人设描述，如果没有人设则返回角色名"""
+def build_role_system_prompt(role: dict) -> str:
+    """
+    从角色设置中构建 system prompt，完全由用户填写的内容决定。
+    不注入任何硬编码的身份、语气或关系描述。
+    """
     if not role:
         return ""
-    
-    persona_parts = []
-    
-    # 角色名称
-    if role.get("name"):
-        persona_parts.append(f"你是{role['name']}")
-    
-    # 人设描述
+    parts = []
     if role.get("persona"):
-        persona_parts.append(role["persona"])
+        parts.append(role["persona"])
     if role.get("traits"):
-        persona_parts.append(f"性格特点：{role['traits']}")
+        parts.append(f"性格特点：{role['traits']}")
     if role.get("tone"):
-        persona_parts.append(f"说话风格：{role['tone']}")
+        parts.append(f"说话风格：{role['tone']}")
     if role.get("memory"):
-        persona_parts.append(f"背景记忆：{role['memory']}")
-    
-    # 如果什么都没填，至少返回角色名或默认描述
-    if not persona_parts:
-        return "你是用户的AI助手"
-    
-    return "\n".join(persona_parts)
+        parts.append(f"背景记忆：{role['memory']}")
+    return "\n".join(parts)
+
+def get_ai_behavior_settings() -> dict:
+    """读取 ai_behavior_settings 表，返回 {setting_name: setting_value} 字典"""
+    if not supabase:
+        return {}
+    try:
+        result = supabase.table("ai_behavior_settings")\
+            .select("setting_name, setting_value")\
+            .execute()
+        if result.data:
+            return {row["setting_name"]: row["setting_value"] for row in result.data}
+        return {}
+    except Exception as e:
+        print(f"⚠️ 读取 ai_behavior_settings 失败（表可能不存在）: {e}")
+        return {}
+
+def get_user_persona_summary() -> str:
+    """读取 user_persona 表，汇总成可注入 prompt 的文字"""
+    if not supabase:
+        return ""
+    try:
+        result = supabase.table("user_persona")\
+            .select("trait_category, trait_detail, confidence_score")\
+            .order("confidence_score", desc=True)\
+            .limit(20)\
+            .execute()
+        if not result.data:
+            return ""
+        lines = []
+        for row in result.data:
+            score = row.get("confidence_score", 0)
+            lines.append(f"[{row['trait_category']}] {row['trait_detail']} (确定度{score:.1f})")
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"⚠️ 读取 user_persona 失败（表可能不存在）: {e}")
+        return ""
 
 # ============ 生命周期 ============
 @asynccontextmanager
@@ -214,6 +236,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_reminders, 'interval', minutes=1, id='reminder_checker')
     scheduler.add_job(summarize_notifications, 'interval', minutes=30, id='notification_summarizer')
     scheduler.add_job(proactive_thinking, 'interval', minutes=5, id='proactive_thinker')  # 每5分钟检查，实际执行由内部随机逻辑控制
+    scheduler.add_job(async_update_persona, 'interval', hours=24, id='persona_updater')  # 每24小时更新用户画像
     scheduler.start()
     print("✅ Scheduler started")
     
@@ -574,61 +597,139 @@ async def summarize_notifications():
 last_proactive_time = None
 next_target_interval = None  # 固定目标间隔，避免每次随机
 
+async def _collect_environment_context() -> dict:
+    """采集所有环境感知数据，返回结构化字典"""
+    now = datetime.utcnow()
+    beijing_hour = (now.hour + 8) % 24
+    weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+
+    # 聊天记录
+    chat_result = supabase.table("memories")\
+        .select("content, created_at")\
+        .eq("type", "chat")\
+        .order("created_at", desc=True)\
+        .limit(20).execute()
+    recent_chats = chat_result.data or []
+
+    # GPS
+    gps_result = supabase.table("memories")\
+        .select("content, metadata, created_at")\
+        .eq("type", "gps_history")\
+        .order("created_at", desc=True)\
+        .limit(3).execute()
+    recent_gps = gps_result.data or []
+
+    # 截屏/应用活动
+    screen_result = supabase.table("memories")\
+        .select("content, metadata, created_at")\
+        .eq("type", "screen_capture")\
+        .order("created_at", desc=True)\
+        .limit(5).execute()
+    recent_screens = screen_result.data or []
+
+    # 系统状态（由快捷指令上传）
+    status_result = supabase.table("memories")\
+        .select("content, metadata, created_at")\
+        .eq("type", "system_status")\
+        .order("created_at", desc=True)\
+        .limit(1).execute()
+    system_status = status_result.data[0] if status_result.data else None
+
+    # 计算失联时长
+    hours_since_last_chat = 0.0
+    if recent_chats:
+        try:
+            last_chat_time = datetime.fromisoformat(
+                recent_chats[0]["created_at"].replace("Z", "").replace("+00:00", "")
+            )
+            hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
+        except Exception:
+            pass
+
+    # 格式化文本上下文
+    gps_context = ""
+    if recent_gps:
+        meta = recent_gps[0].get("metadata", {})
+        location = meta.get("address") or meta.get("location", "未知位置")
+        gps_context = f"位置：{location}（{recent_gps[0].get('created_at','')[:16]}）"
+
+    status_context = ""
+    if system_status:
+        meta = system_status.get("metadata", {})
+        battery = meta.get("battery", "未知")
+        wifi = meta.get("wifi", "未知")
+        status_context = f"电量：{battery}% | WiFi：{wifi}"
+
+    screen_context = ""
+    if recent_screens:
+        apps = [s.get("metadata", {}).get("app", "?") for s in recent_screens[:3]]
+        screen_context = f"最近使用应用：{', '.join(apps)}"
+
+    chat_summary = "\n".join([c["content"][:120] for c in recent_chats[:10]]) or "（暂无聊天记录）"
+
+    return {
+        "now": now,
+        "beijing_hour": beijing_hour,
+        "weekday": weekday,
+        "hours_since_last_chat": hours_since_last_chat,
+        "gps_context": gps_context,
+        "status_context": status_context,
+        "screen_context": screen_context,
+        "chat_summary": chat_summary,
+    }
+
 async def proactive_thinking():
-    """随机间隔主动思考，决定是否发送消息
-    白天(7:00-23:00): 30分钟-2小时随机
-    夜间(23:00-7:00): 3-5小时随机
+    """
+    多角色竞争推送机制：
+    1. 从 ai_behavior_settings 读取间隔/禁扰配置
+    2. 采集环境感知数据 + user_persona 用户画像
+    3. 让所有角色各自独立决策（系统prompt完全来自角色自身设置，不硬编码任何描述）
+    4. 按优先级（当前活跃角色优先）选出发送者，推送Bark
     """
     global last_proactive_time, next_target_interval
-    
-    print(f"🔄 主动思考检查开始...")
-    
+
+    print("🔄 主动思考检查开始...")
+
     if not supabase:
         print("❌ Supabase未连接，跳过主动思考")
         return
-    
+
     try:
         now = datetime.utcnow()
-        current_hour = (now.hour + 8) % 24  # 转换为北京时间
-        
-        # 从memories中读取用户设置的频率偏好
-        freq_result = supabase.table("memories")\
-            .select("metadata")\
-            .eq("type", "frequency_preference")\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
-        
-        # 默认间隔（分钟）
-        min_interval = 60
-        max_interval = 120
-        
-        if freq_result.data and freq_result.data[0].get("metadata"):
-            pref = freq_result.data[0]["metadata"]
-            min_interval = pref.get("min_interval", 60)
-            max_interval = pref.get("max_interval", 120)
-            print(f"📊 使用用户偏好间隔: {min_interval}-{max_interval}分钟")
-            # 检查是否在禁止时段
-            no_disturb_start = pref.get("no_disturb_start")
-            no_disturb_end = pref.get("no_disturb_end")
-            if no_disturb_start is not None and no_disturb_end is not None:
-                if no_disturb_start <= current_hour or current_hour < no_disturb_end:
-                    print(f"⏸️ 当前在禁止打扰时段 ({no_disturb_start}:00-{no_disturb_end}:00)")
-                    return
-        else:
-            # 没有用户偏好，使用默认时间段规则
+        current_hour = (now.hour + 8) % 24
+
+        # ── 第一步：读取 AI 行为设置 ────────────────────────────────────
+        behavior = get_ai_behavior_settings()
+
+        # 间隔配置（分钟）
+        min_interval = int(behavior.get("min_interval", 0) or 0)
+        max_interval = int(behavior.get("max_interval", 0) or 0)
+        if not min_interval or not max_interval:
+            # 没有配置时使用时间段默认值
             if 3 <= current_hour < 7:
                 min_interval, max_interval = 180, 300
             elif 23 <= current_hour or current_hour < 3:
                 min_interval, max_interval = 120, 240
             else:
                 min_interval, max_interval = 30, 120
-            print(f"📊 使用默认间隔: {min_interval}-{max_interval}分钟 (当前北京时间{current_hour}点)")
-        
-        # 根据间隔决定是否执行（使用固定目标间隔）
+        print(f"📊 间隔设置: {min_interval}-{max_interval}分钟 (北京时间{current_hour}点)")
+
+        # 禁扰时段
+        no_disturb_start = behavior.get("no_disturb_start")
+        no_disturb_end = behavior.get("no_disturb_end")
+        if no_disturb_start is not None and no_disturb_end is not None:
+            try:
+                nds, nde = int(no_disturb_start), int(no_disturb_end)
+                in_no_disturb = (nds <= current_hour < nde) if nds < nde else (current_hour >= nds or current_hour < nde)
+                if in_no_disturb:
+                    print(f"⏸️ 禁扰时段 {nds}:00-{nde}:00，跳过")
+                    return
+            except Exception:
+                pass
+
+        # 时间间隔判断
         if last_proactive_time:
             elapsed_minutes = (now - last_proactive_time).total_seconds() / 60
-            # 如果没有目标间隔，生成一个
             if next_target_interval is None:
                 next_target_interval = random.randint(min_interval, max_interval)
             print(f"⏱️ 已过{elapsed_minutes:.1f}分钟，目标{next_target_interval}分钟")
@@ -636,185 +737,111 @@ async def proactive_thinking():
                 return
         else:
             print("🆕 首次执行主动思考")
-        
-        # 更新上次执行时间，并生成下一个目标间隔
+
         last_proactive_time = now
         next_target_interval = random.randint(min_interval, max_interval)
         print(f"✅ 开始执行主动思考，下次间隔{next_target_interval}分钟")
-        
-        # ============ 环境感知数据采集 ============
-        # 获取最近的聊天记录
-        chat_result = supabase.table("memories")\
-            .select("content, type, created_at")\
-            .eq("type", "chat")\
-            .order("created_at", desc=True)\
-            .limit(20)\
-            .execute()
-        recent_chats = chat_result.data or []
-        
-        # 获取最近的GPS记录
-        gps_result = supabase.table("memories")\
-            .select("content, metadata, created_at")\
-            .eq("type", "gps_history")\
-            .order("created_at", desc=True)\
-            .limit(3)\
-            .execute()
-        recent_gps = gps_result.data or []
-        
-        # 获取最近的截屏数据（微信、美团等应用活动）
-        screen_result = supabase.table("memories")\
-            .select("content, metadata, created_at")\
-            .eq("type", "screen_capture")\
-            .order("created_at", desc=True)\
-            .limit(5)\
-            .execute()
-        recent_screens = screen_result.data or []
-        
-        # 获取系统状态（电量、WiFi等，由快捷指令上传）
-        status_result = supabase.table("memories")\
-            .select("content, metadata, created_at")\
-            .eq("type", "system_status")\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
-        system_status = status_result.data[0] if status_result.data else None
-        
-        # 计算失联时长
-        hours_since_last_chat = 0
-        if recent_chats:
-            last_chat_time = datetime.fromisoformat(recent_chats[0]["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
-            hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
-        
-        # ============ 构建环境上下文 ============
-        beijing_hour = (now.hour + 8) % 24
-        weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
-        
-        # GPS上下文
-        gps_context = ""
-        if recent_gps:
-            latest_gps = recent_gps[0]
-            gps_meta = latest_gps.get("metadata", {})
-            location = gps_meta.get("location", "未知位置")
-            gps_time = latest_gps.get("created_at", "")[:16]
-            gps_context = f"位置：{location}（{gps_time}）"
-        
-        # 系统状态上下文
-        status_context = ""
-        if system_status:
-            meta = system_status.get("metadata", {})
-            battery = meta.get("battery", "未知")
-            wifi = meta.get("wifi", "未知")
-            status_context = f"电量：{battery}% | WiFi：{wifi}"
-        
-        # 截屏活动上下文
-        screen_context = ""
-        if recent_screens:
-            apps = [s.get("metadata", {}).get("app", "未知") for s in recent_screens[:3]]
-            screen_context = f"最近使用的应用：{', '.join(apps)}"
-        
-        # 聊天记录上下文
-        chat_context = "\n".join([c["content"][:100] for c in recent_chats[:10]]) if recent_chats else "（暂无聊天记录）"
-        
-        # ============ AI决策 ============
-        system_prompt = """你是一个智能助手，负责根据用户的环境状态决定是否主动发送关怀消息。
 
-## 你的任务
-1. 分析用户的环境数据（位置、电量、活动、聊天记录）
-2. 识别是否有需要关心的场景
-3. 决定是否发送消息，以及发送什么内容
+        # ── 第二步：环境感知数据 + 用户画像 ─────────────────────────────
+        env = await _collect_environment_context()
+        persona_summary = get_user_persona_summary()
 
-## 需要主动关心的场景示例
-- 深夜还在外面（GPS显示不在家）
-- 电量很低（<20%）
-- 长时间没有聊天（>3小时）
-- 深夜还在使用手机（>23点）
-- 检测到用户可能在加班（晚上还在公司位置）
+        env_block = f"""【当前时间】{env['weekday']} {env['beijing_hour']}点
+{env['gps_context'] or '位置：未知'}
+{env['status_context'] or '系统状态：未知'}
+{env['screen_context'] or '应用活动：未知'}
+失联时长：{env['hours_since_last_chat']:.1f}小时"""
 
-## 不需要打扰的场景
-- 正常工作时间
-- 用户刚刚聊过天
-- 凌晨3-7点（睡眠时间）
+        persona_block = f"\n\n【关于用户的了解】\n{persona_summary}" if persona_summary else ""
 
-## 回复格式
-- 如果不需要发消息：回复 "PASS"
-- 如果需要发消息：回复 "MESSAGE: 你想说的话"
+        chat_block = f"\n\n【最近聊天记录】\n{env['chat_summary']}"
 
-消息要简短、自然、温暖，像朋友一样关心用户。"""
-
-        user_prompt = f"""【当前时间】{weekday} {beijing_hour}点
-
-【环境状态】
-{gps_context if gps_context else "位置：未知"}
-{status_context if status_context else "系统状态：未知"}
-{screen_context if screen_context else "应用活动：未知"}
-用户失联：{hours_since_last_chat:.1f}小时
-
-【最近聊天记录】
-{chat_context}
+        user_prompt = f"""{env_block}{persona_block}{chat_block}
 
 ---
-请分析环境状态，决定是否需要主动发消息关心用户。"""
+根据以上信息，判断此刻是否适合发送消息。
+- 不发送：回复 PASS
+- 发送：回复 MESSAGE: 你想说的话（消息本身，不含前缀）"""
 
-        decision = await call_ai(system_prompt, user_prompt)
-        decision = decision.strip()
-        
-        print(f"🤔 主动思考决策: {decision[:100]}...")
-        
-        # 解析FREQ指令（频率偏好）
-        if "FREQ:" in decision:
-            freq_match = re.search(r'FREQ:\s*(.+?)(?:\n|$)', decision)
-            if freq_match:
-                freq_str = freq_match.group(1)
-                freq_data = {}
-                # 解析各个参数
-                for param in ['min_interval', 'max_interval', 'no_disturb_start', 'no_disturb_end']:
-                    match = re.search(rf'{param}=(\d+)', freq_str)
-                    if match:
-                        freq_data[param] = int(match.group(1))
-                
-                if freq_data:
-                    print(f"📊 检测到频率偏好: {freq_data}")
-                    # 保存到memories
-                    supabase.table("memories").insert({
-                        "type": "frequency_preference",
-                        "content": f"用户频率偏好: {freq_str}",
-                        "metadata": freq_data,
-                        "is_important": True
-                    }).execute()
-        
-        # 解析MESSAGE指令
-        message = None
-        if "MESSAGE:" in decision:
-            msg_match = re.search(r'MESSAGE:\s*(.+?)(?:\n|$)', decision, re.DOTALL)
-            if msg_match:
-                message = msg_match.group(1).strip()
-        
-        if message:
-            # 存入记忆，标记为主动消息
+        # ── 第三步：当前活跃角色 ─────────────────────────────────────────
+        current_active_role_id = behavior.get("current_active_role_id")
+        all_roles = get_all_roles()
+
+        if not all_roles:
+            print("⚠️ 没有找到任何角色，跳过主动思考")
+            return
+
+        # 按优先级排序：活跃角色排最前
+        def role_priority(r: dict) -> int:
+            return 0 if r.get("id") == current_active_role_id else 1
+
+        sorted_roles = sorted(all_roles, key=role_priority)
+
+        # ── 第四步：多角色竞争决策 ───────────────────────────────────────
+        winner_role = None
+        winner_message = None
+
+        for role in sorted_roles:
+            role_name = role.get("name", "AI")
+            role_system_prompt = build_role_system_prompt(role)
+
+            # 如果角色没有填写任何人设，system prompt 为空字符串，
+            # 此时 call_ai 将只传 user_prompt（无人格约束）
+            if role_system_prompt:
+                system_prompt = f"{role_system_prompt}\n\n## 指令格式\n只输出 PASS 或 MESSAGE: 消息内容，不要输出其他内容。"
+            else:
+                system_prompt = "你是用户的AI助手。只输出 PASS 或 MESSAGE: 消息内容，不要输出其他内容。"
+
+            try:
+                decision = (await call_ai(system_prompt, user_prompt)).strip()
+                print(f"🤔 [{role_name}] 决策: {decision[:80]}...")
+
+                if decision.upper().startswith("MESSAGE:"):
+                    msg = decision[len("MESSAGE:"):].strip()
+                    if msg:
+                        winner_role = role
+                        winner_message = msg
+                        # 活跃角色直接采纳，非活跃角色仅在无其他候选时采纳
+                        if role.get("id") == current_active_role_id:
+                            break  # 活跃角色优先，直接定稿
+            except Exception as role_err:
+                print(f"⚠️ [{role_name}] 决策失败: {role_err}")
+                continue
+
+        # ── 第五步：推送 ──────────────────────────────────────────────────
+        if winner_message and winner_role:
+            role_name = winner_role.get("name", "AI")
+            print(f"💬 [{role_name}] 决定发送: {winner_message}")
+
+            # 存入记忆
             supabase.table("memories").insert({
                 "type": "proactive_message",
-                "content": message,
-                "metadata": {"hours_since_last_chat": hours_since_last_chat, "trigger": "proactive_thinking"},
+                "content": winner_message,
+                "metadata": {
+                    "role_id": winner_role.get("id"),
+                    "role_name": role_name,
+                    "hours_since_last_chat": env["hours_since_last_chat"],
+                    "trigger": "proactive_thinking",
+                },
                 "is_important": False
             }).execute()
-            print(f"💬 主动消息已生成: {message}")
-            
-            # 通过Bark推送到手机
+
+            # Bark 推送，标题为角色名
             if BARK_KEY:
                 try:
                     async with httpx.AsyncClient() as client:
-                        bark_url = f"https://api.day.app/{BARK_KEY}/AI助手/{quote(message)}?sound=shake&isArchive=1"
+                        bark_url = (
+                            f"https://api.day.app/{BARK_KEY}"
+                            f"/{quote(role_name)}/{quote(winner_message)}"
+                            f"?sound=shake&isArchive=1&group={quote(role_name)}"
+                        )
                         await client.get(bark_url, timeout=10.0)
-                        print(f"📤 已推送主动消息到Bark")
+                        print(f"📤 已通过Bark推送（{role_name}）")
                 except Exception as bark_err:
                     print(f"⚠️ Bark推送失败: {bark_err}")
-            
-        elif decision == "LOCK":
-            print("🔒 建议用户锁屏休息")
-            
         else:
-            print("⏭️ PASS - 不发送消息")
-            
+            print("⏭️ 所有角色均选择 PASS，不发送消息")
+
     except Exception as e:
         print(f"❌ 主动思考失败: {e}")
 
@@ -823,28 +850,152 @@ async def proactive_thinking():
 async def debug_proactive():
     """调试主动思考功能"""
     global last_proactive_time
-    
-    butler_role = get_butler_role()
-    
-    # 获取最近的proactive_message
+
+    all_roles = get_all_roles()
+    behavior = get_ai_behavior_settings()
+
     recent_proactive = []
     if supabase:
         result = supabase.table("memories")\
-            .select("*")\
+            .select("content, metadata, created_at")\
             .eq("type", "proactive_message")\
             .order("created_at", desc=True)\
             .limit(5)\
             .execute()
         recent_proactive = result.data or []
-    
+
     return {
-        "butler_role_found": butler_role is not None,
-        "butler_role_name": butler_role.get("name") if butler_role else None,
-        "butler_role_isHomeAssistant": butler_role.get("isHomeAssistant") if butler_role else None,
+        "roles_count": len(all_roles),
+        "role_names": [r.get("name") for r in all_roles],
+        "current_active_role_id": behavior.get("current_active_role_id"),
+        "ai_behavior_settings": behavior,
         "last_proactive_time": str(last_proactive_time) if last_proactive_time else None,
-        "recent_proactive_messages": len(recent_proactive),
+        "next_target_interval_min": next_target_interval,
+        "recent_proactive_messages": [
+            {"content": m["content"], "role": m.get("metadata", {}).get("role_name"), "at": m["created_at"]}
+            for m in recent_proactive
+        ],
         "scheduler_running": scheduler.running if scheduler else False,
     }
+
+# ============ AI 自主修改运行参数 ============
+class AiBehaviorUpdate(BaseModel):
+    setting_name: str
+    setting_value: str
+    reason: Optional[str] = None  # AI 说明为什么要改
+
+@app.post("/ai/behavior")
+async def update_ai_behavior(update: AiBehaviorUpdate):
+    """
+    允许 AI（或快捷指令）修改自身运行参数。
+    常用 setting_name：
+      min_interval / max_interval  推送间隔（分钟）
+      no_disturb_start / no_disturb_end  禁扰时段（小时，北京时间）
+      current_active_role_id       当前活跃角色 ID
+      morning_check_in_time        晨间打招呼时间（HH:MM）
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    try:
+        # upsert：存在则更新，不存在则插入
+        supabase.table("ai_behavior_settings").upsert({
+            "setting_name": update.setting_name,
+            "setting_value": update.setting_value,
+            "last_updated": datetime.utcnow().isoformat()
+        }, on_conflict="setting_name").execute()
+        print(f"⚙️ AI更新行为设置: {update.setting_name}={update.setting_value} ({update.reason or '无说明'})")
+        return {"success": True, "setting_name": update.setting_name, "setting_value": update.setting_value}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ai/behavior")
+async def get_ai_behavior():
+    """读取当前所有 AI 行为设置"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    return get_ai_behavior_settings()
+
+# ============ 用户画像更新（定时任务）============
+async def async_update_persona():
+    """
+    每24小时扫描近期聊天记录和GPS数据，提取用户特征，更新 user_persona 表。
+    只提取 AI 本身不知道的新信息，不重复插入已有认知。
+    """
+    if not supabase or not OPENAI_API_KEY:
+        return
+    try:
+        print("🧠 开始更新用户画像...")
+        # 获取近24小时聊天记录
+        since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        chat_result = supabase.table("memories")\
+            .select("content, created_at")\
+            .eq("type", "chat")\
+            .gte("created_at", since)\
+            .order("created_at", desc=False)\
+            .limit(50).execute()
+        chats = chat_result.data or []
+        if not chats:
+            print("🧠 近24小时无新聊天，跳过画像更新")
+            return
+
+        # 获取近24小时GPS轨迹
+        gps_result = supabase.table("memories")\
+            .select("content, metadata, created_at")\
+            .eq("type", "gps_history")\
+            .gte("created_at", since)\
+            .order("created_at", desc=False)\
+            .limit(20).execute()
+        gps_data = gps_result.data or []
+
+        # 读取现有画像（避免重复提取）
+        existing_traits = get_user_persona_summary()
+
+        chat_text = "\n".join([c["content"][:100] for c in chats])
+        gps_text = ""
+        if gps_data:
+            locations = [g.get("metadata", {}).get("address") or g.get("metadata", {}).get("location", "?") for g in gps_data]
+            gps_text = f"\n今日轨迹：{' -> '.join(locations)}"
+
+        system_prompt = """你是一个用户画像分析师。根据用户今天的聊天记录和位置轨迹，提取关于用户的新认知。
+输出格式（每行一条，JSON数组）：
+[{"category": "类别", "detail": "具体认知", "confidence": 0.8}]
+类别包括：lifestyle（生活习惯）, preference（偏好）, emotional_state（情绪状态）, work_habit（工作习惯）, location_habit（位置习惯）
+只提取有明确证据支撑的认知，confidence 0.5-1.0。
+如果没有新认知，输出空数组 []"""
+
+        user_prompt = f"""【今日聊天记录】\n{chat_text}{gps_text}
+
+【已有画像（不要重复）】\n{existing_traits or '（无）'}
+
+请提取今日新增的用户认知："""
+
+        result_text = await call_ai(system_prompt, user_prompt)
+        result_text = result_text.strip()
+
+        # 尝试解析JSON
+        json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
+        if not json_match:
+            print(f"🧠 画像提取返回非JSON: {result_text[:100]}")
+            return
+
+        traits = json.loads(json_match.group(0))
+        if not traits:
+            print("🧠 无新用户认知")
+            return
+
+        for trait in traits:
+            if trait.get("category") and trait.get("detail"):
+                supabase.table("user_persona").insert({
+                    "trait_category": trait["category"],
+                    "trait_detail": trait["detail"],
+                    "confidence_score": float(trait.get("confidence", 0.7)),
+                    "updated_at": datetime.utcnow().isoformat()
+                }).execute()
+
+        print(f"🧠 用户画像已更新，新增 {len(traits)} 条认知")
+
+    except Exception as e:
+        print(f"❌ 用户画像更新失败: {e}")
 
 # ============ 获取待推送的主动消息 ============
 @app.get("/proactive/pending")
