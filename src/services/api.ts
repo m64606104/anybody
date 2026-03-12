@@ -525,3 +525,87 @@ export async function syncMessage(chatId: string, message: any): Promise<{
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
+
+// ============ 后端聊天 ============
+
+/**
+ * 通过后端发送聊天消息
+ * 后端会调用AI、存入数据库、推送Bark通知
+ */
+export async function sendChatMessage(
+  chatId: string,
+  message: string,
+  roleId?: string,
+  history?: { role: string; content: string }[]
+): Promise<{
+  success: boolean;
+  reply: string;
+  role_name: string;
+  chat_id: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/chat/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: chatId,
+      role_id: roleId,
+      message,
+      history,
+    }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取聊天消息历史
+ */
+export async function getChatMessages(chatId: string, limit = 50): Promise<{
+  messages: {
+    id: number;
+    chat_id: string;
+    sender: string;
+    content: string;
+    created_at: string;
+    metadata?: any;
+  }[];
+}> {
+  const resp = await fetch(`${API_BASE_URL}/chat/messages/${chatId}?limit=${limit}`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 获取最新AI回复（轮询用）
+ */
+export async function getLatestReply(chatId: string): Promise<{
+  has_reply: boolean;
+  message?: {
+    id: number;
+    content: string;
+    created_at: string;
+    metadata?: any;
+  };
+}> {
+  const resp = await fetch(`${API_BASE_URL}/chat/latest?chat_id=${chatId}`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 推送Bark通知
+ */
+export async function sendBarkNotification(
+  title: string,
+  body: string,
+  sound = 'shake',
+  group?: string
+): Promise<{ success: boolean; error?: string }> {
+  const resp = await fetch(`${API_BASE_URL}/bark/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, body, sound, group }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}

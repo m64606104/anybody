@@ -104,6 +104,15 @@ def get_persona():
     except: return ""
 
 # 定时任务
+async def self_ping():
+    """每10分钟自我ping，防止Render休眠"""
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.get("https://anybody.onrender.com/health", timeout=30)
+        print("🏓 Self-ping OK")
+    except Exception as e:
+        print(f"🏓 Self-ping failed: {e}")
+
 async def check_reminders():
     if not supabase: return
     now = datetime.utcnow()
@@ -289,6 +298,169 @@ async def recent_memories(limit: int = 10):
     r = supabase.table("memories").select("*").order("created_at", desc=True).limit(limit).execute()
     return {"memories": r.data or []}
 
+# ============ 后端聊天（核心功能）============
+class ChatSendRequest(BaseModel):
+    chat_id: str
+    role_id: Optional[str] = None
+    message: str
+    history: Optional[List[dict]] = None  # [{role, content}]
+
+@app.post("/chat/send")
+async def chat_send(req: ChatSendRequest):
+    """
+    后端聊天：接收用户消息 -> 调用AI -> 存入数据库 -> 推送Bark
+    用户发完消息可以离开页面，AI回复会自动推送到手机
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 1. 存储用户消息
+    supabase.table("chat_messages").insert({
+        "chat_id": req.chat_id,
+        "role_id": req.role_id,
+        "sender": "user",
+        "content": req.message
+    }).execute()
+    
+    # 2. 获取角色设置
+    role = None
+    roles = get_all_roles()
+    if req.role_id and roles:
+        role = next((r for r in roles if r.get("id") == req.role_id), None)
+    if not role and roles:
+        role = roles[0]
+    
+    role_prompt = build_role_prompt(role) if role else ""
+    role_name = role.get("name", "AI") if role else "AI"
+    
+    # 3. 获取上下文（记忆、用户画像、GPS状态）
+    memories = supabase.table("memories").select("content").order("created_at", desc=True).limit(20).execute().data or []
+    persona = get_persona()
+    gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
+    
+    hr = (datetime.utcnow().hour + 8) % 24
+    context_parts = [f"当前时间：{hr}点"]
+    if gps:
+        if gps[0].get("address"): context_parts.append(f"用户位置：{gps[0]['address']}")
+        if gps[0].get("battery"): context_parts.append(f"手机电量：{gps[0]['battery']}%")
+    if persona:
+        context_parts.append(f"\n【用户画像】\n{persona}")
+    if memories:
+        mem_text = "\n".join([m["content"][:100] for m in memories[:10]])
+        context_parts.append(f"\n【最近记忆】\n{mem_text}")
+    
+    context = "\n".join(context_parts)
+    
+    # 4. 构建系统提示词
+    system_prompt = f"""{role_prompt}
+
+{context}
+
+## 特殊指令格式（在回复中使用，系统会自动执行）
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
+- 记账：[EXPENSE:50|food|午餐]
+- 搜索网络：[SEARCH:查询内容]
+
+请直接回复，不要输出JSON格式。"""
+
+    # 5. 构建消息历史
+    messages = [{"role": "system", "content": system_prompt}]
+    if req.history:
+        for h in req.history[-20:]:  # 最多20条历史
+            messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    messages.append({"role": "user", "content": req.message})
+    
+    # 6. 调用AI
+    try:
+        async with httpx.AsyncClient() as c:
+            resp = await c.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": OPENAI_MODEL, "messages": messages},
+                timeout=60.0
+            )
+            if resp.status_code != 200:
+                raise Exception(f"AI API error: {resp.status_code}")
+            ai_reply = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        ai_reply = f"调用AI失败：{str(e)}"
+    
+    # 7. 存储AI回复
+    supabase.table("chat_messages").insert({
+        "chat_id": req.chat_id,
+        "role_id": req.role_id,
+        "sender": "assistant",
+        "content": ai_reply,
+        "metadata": {"role_name": role_name}
+    }).execute()
+    
+    # 8. 推送Bark通知
+    if BARK_KEY and ai_reply:
+        try:
+            # 截取前100字符作为推送内容
+            push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
+            async with httpx.AsyncClient() as c:
+                url = f"https://api.day.app/{BARK_KEY}/{quote(role_name)}/{quote(push_content)}?sound=shake&group={quote(role_name)}"
+                await c.get(url, timeout=10)
+            print(f"📤 Bark推送: [{role_name}] {push_content[:30]}...")
+        except Exception as e:
+            print(f"⚠️ Bark推送失败: {e}")
+    
+    # 9. 解析并执行指令
+    # REMINDER指令
+    reminder_match = re.search(r'\[REMINDER:([^\|]+)\|([^\]]+)\]', ai_reply)
+    if reminder_match:
+        try:
+            remind_time = reminder_match.group(1)
+            remind_content = reminder_match.group(2)
+            supabase.table("reminders").insert({
+                "content": remind_content,
+                "remind_at": remind_time
+            }).execute()
+            print(f"⏰ 创建闹钟: {remind_content} @ {remind_time}")
+        except: pass
+    
+    # EXPENSE指令
+    expense_match = re.search(r'\[EXPENSE:([^\|]+)\|([^\|]+)\|([^\]]+)\]', ai_reply)
+    if expense_match:
+        try:
+            amount = float(expense_match.group(1))
+            category = expense_match.group(2)
+            desc = expense_match.group(3)
+            supabase.table("expenses").insert({
+                "amount": amount,
+                "category": category,
+                "description": desc,
+                "date": datetime.utcnow().strftime("%Y-%m-%d")
+            }).execute()
+            print(f"💰 记账: {category} {desc} ¥{amount}")
+        except: pass
+    
+    return {
+        "success": True,
+        "reply": ai_reply,
+        "role_name": role_name,
+        "chat_id": req.chat_id
+    }
+
+@app.get("/chat/messages/{chat_id}")
+async def get_chat_messages(chat_id: str, limit: int = 50):
+    """获取某个会话的消息历史"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    r = supabase.table("chat_messages").select("*").eq("chat_id", chat_id).order("created_at", desc=False).limit(limit).execute()
+    return {"messages": r.data or []}
+
+@app.get("/chat/latest")
+async def get_latest_reply(chat_id: str):
+    """获取最新的AI回复（前端轮询用）"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    r = supabase.table("chat_messages").select("*").eq("chat_id", chat_id).eq("sender", "assistant").order("created_at", desc=True).limit(1).execute()
+    if r.data:
+        return {"has_reply": True, "message": r.data[0]}
+    return {"has_reply": False}
+
 @app.post("/ai/behavior")
 async def set_behavior(u: AiBehaviorUpdate):
     supabase.table("ai_behavior_settings").upsert({"setting_name": u.setting_name, "setting_value": u.setting_value}, on_conflict="setting_name").execute()
@@ -396,9 +568,45 @@ async def sync_save(d: SyncData):
     supabase.table("user_sync").upsert(data, on_conflict="user_id").execute()
     return {"success": True}
 
+@app.post("/bark/push")
+async def bark_push(title: str, body: str, sound: str = "shake", group: str = None):
+    """通过Bark推送消息到手机"""
+    if not BARK_KEY:
+        return {"success": False, "error": "BARK_KEY not configured"}
+    try:
+        async with httpx.AsyncClient() as c:
+            url = f"https://api.day.app/{BARK_KEY}/{quote(title)}/{quote(body)}?sound={sound}"
+            if group:
+                url += f"&group={quote(group)}"
+            await c.get(url, timeout=10)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+class BarkRequest(BaseModel):
+    title: str
+    body: str
+    sound: str = "shake"
+    group: Optional[str] = None
+
+@app.post("/bark/send")
+async def bark_send(req: BarkRequest):
+    """通过Bark推送消息到手机（JSON body）"""
+    if not BARK_KEY:
+        return {"success": False, "error": "BARK_KEY not configured"}
+    try:
+        async with httpx.AsyncClient() as c:
+            url = f"https://api.day.app/{BARK_KEY}/{quote(req.title)}/{quote(req.body)}?sound={req.sound}"
+            if req.group:
+                url += f"&group={quote(req.group)}"
+            await c.get(url, timeout=10)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "supabase": "connected" if supabase else "no"}
+    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no"}
 
 if __name__ == "__main__":
     import uvicorn
