@@ -94,6 +94,7 @@ type ChatSettings = {
 type UserProfile = {
   nickname: string;
   signature?: string;
+  avatar?: string;
 };
 
 const useLocalState = <T,>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
@@ -1815,29 +1816,37 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
               {showTimeSeparator && (
                 <div className="text-center text-xs text-slate-400 py-1">{timeStr}</div>
               )}
-              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
+              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-start gap-2`}>
                 {deleteMode && (
                   <input
                     type="checkbox"
                     checked={selectedMessages.has(m.id)}
                     onChange={() => toggleMessageSelection(m.id)}
-                    className="w-4 h-4 cursor-pointer"
+                    className="w-4 h-4 cursor-pointer mt-2"
                   />
                 )}
+                {/* AI角色头像（左侧） */}
+                {m.role === 'assistant' && currentRole?.avatar && (
+                  <img src={currentRole.avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                )}
                 <div 
-                  className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+                  className={`max-w-[70%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
                   onClick={() => deleteMode && toggleMessageSelection(m.id)}
                   dangerouslySetInnerHTML={{ __html: m.content }}
                 />
+                {/* 用户头像（右侧） */}
+                {m.role === 'user' && userProfile.avatar && (
+                  <img src={userProfile.avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                )}
               </div>
             </React.Fragment>
           );
         })}
         <div ref={messagesEndRef} />
       </div>
-      <div className="card glass p-3 flex items-center gap-2">
+      <div className="card glass p-2 flex items-center gap-1.5" style={{ maxWidth: '100%' }}>
         {/* 上传图片按钮 */}
-        <label className="cursor-pointer p-2 rounded-full hover:bg-white/30 transition-colors">
+        <label className="cursor-pointer p-1.5 rounded-full hover:bg-white/30 transition-colors flex-shrink-0">
           <input
             type="file"
             accept="image/*"
@@ -1862,7 +1871,7 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
           </svg>
         </label>
         <input
-          className="flex-1 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none"
+          className="flex-1 min-w-0 bg-white/60 border border-white/60 rounded-xl px-2.5 py-1.5 text-sm focus:outline-none"
           placeholder="输入消息..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1873,7 +1882,7 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             }
           }}
         />
-        <button className="btn bg-slate-800 text-white shadow-lg" onClick={handleSend}>发送</button>
+        <button className="btn bg-slate-800 text-white shadow-lg px-3 py-1.5 text-sm flex-shrink-0" onClick={handleSend}>发送</button>
       </div>
 
       {showRolePanel && currentRole && currentChat && (
@@ -1954,15 +1963,41 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
 
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">用户信息</div>
-          <label className="text-sm text-slate-700 flex flex-col gap-1">
-            昵称
-            <input
-              className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
-              value={userProfile.nickname}
-              onChange={(e) => setUserProfile({ ...userProfile, nickname: e.target.value })}
-              placeholder="你的名字"
-            />
-          </label>
+          <div className="flex items-center gap-3">
+            <label className="cursor-pointer">
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      setUserProfile({ ...userProfile, avatar: ev.target?.result as string });
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                }}
+              />
+              {userProfile.avatar ? (
+                <img src={userProfile.avatar} alt="头像" className="w-14 h-14 rounded-full object-cover border-2 border-white/50" />
+              ) : (
+                <div className="w-14 h-14 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-xs">上传头像</div>
+              )}
+            </label>
+            <div className="flex-1 space-y-2">
+              <label className="text-sm text-slate-700 flex flex-col gap-1">
+                昵称
+                <input
+                  className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
+                  value={userProfile.nickname}
+                  onChange={(e) => setUserProfile({ ...userProfile, nickname: e.target.value })}
+                  placeholder="你的名字"
+                />
+              </label>
+            </div>
+          </div>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             个性签名
             <input
