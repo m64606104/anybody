@@ -154,6 +154,7 @@ const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [deleteMode, setDeleteMode] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
+  const [visibleMessageCount, setVisibleMessageCount] = useState(50); // 分页：默认显示50条
   const [showAssistantChat, setShowAssistantChat] = useState(false); // 流体球小聊天窗口
   const [assistantInput, setAssistantInput] = useState(''); // 助手聊天输入
   const [assistantBubbles, setAssistantBubbles] = useState<{id: string; content: string; createdAt: number}[]>([]); // 主动消息气泡
@@ -1424,12 +1425,14 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
       const existingChat = chats.find((c) => c.roleId === roleId);
       if (existingChat) {
         setSelectedChatId(existingChat.id);
+        setVisibleMessageCount(50); // 切换聊天时重置分页
         setScreen('chat');
       } else {
         const newChat: Chat = { id: uuid(), title: roles.find((r) => r.id === roleId)?.name || '新对话', roleId };
         setChats((prev) => [newChat, ...prev]);
         setMessagesMap((prev) => ({ ...prev, [newChat.id]: [] }));
         setSelectedChatId(newChat.id);
+        setVisibleMessageCount(50); // 切换聊天时重置分页
         setScreen('chat');
       }
     };
@@ -1537,7 +1540,16 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar space-y-3 pb-4 min-h-0">
-        {currentMessages.map((m) => (
+        {/* 分页：如果消息超过显示数量，显示"加载更多"按钮 */}
+        {currentMessages.length > visibleMessageCount && (
+          <button 
+            className="w-full py-2 text-sm text-slate-500 hover:text-slate-700 hover:bg-white/30 rounded-lg transition-colors"
+            onClick={() => setVisibleMessageCount(prev => prev + 50)}
+          >
+            ↑ 加载更早的消息（还有 {currentMessages.length - visibleMessageCount} 条）
+          </button>
+        )}
+        {currentMessages.slice(-visibleMessageCount).map((m) => (
           <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
             {deleteMode && (
               <input
