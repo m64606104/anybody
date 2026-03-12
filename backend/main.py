@@ -156,7 +156,11 @@ async def proactive_thinking():
     gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
     persona = get_persona()
     
-    env = f"时间：{hr}点\n位置：{gps[0].get('address','未知') if gps else '未知'}\n电量：{gps[0].get('battery','?') if gps else '?'}%"
+    # 精确时间
+    now_beijing = now + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
+    env = f"时间：{time_str}\n位置：{gps[0].get('address','未知') if gps else '未知'}\n电量：{gps[0].get('battery','?') if gps else '?'}%"
     chat_ctx = "\n".join([c["content"][:80] for c in chats]) or "无"
     prompt = f"{env}\n\n【画像】\n{persona or '无'}\n\n【聊天】\n{chat_ctx}\n\n---\n判断是否发消息。不发回PASS，发回MESSAGE:内容"
     
@@ -338,8 +342,12 @@ async def chat_send(req: ChatSendRequest):
     persona = get_persona()
     gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
     
-    hr = (datetime.utcnow().hour + 8) % 24
-    context_parts = [f"当前时间：{hr}点"]
+    # 精确时间感知（北京时间）
+    now_utc = datetime.utcnow()
+    now_beijing = now_utc + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M:%S")
+    context_parts = [f"当前时间：{time_str}"]
     if gps:
         if gps[0].get("address"): context_parts.append(f"用户位置：{gps[0]['address']}")
         if gps[0].get("battery"): context_parts.append(f"手机电量：{gps[0]['battery']}%")
@@ -489,7 +497,9 @@ async def debug_proactive():
     roles = get_all_roles()
     beh = get_behavior()
     recent = supabase.table("proactive_messages").select("content,role_name,created_at").order("created_at", desc=True).limit(5).execute().data or []
+    now_beijing = datetime.utcnow() + timedelta(hours=8)
     return {
+        "server_time": now_beijing.strftime("%Y-%m-%d %H:%M:%S"),
         "roles_count": len(roles),
         "role_names": [r.get("name") for r in roles],
         "current_active_role_id": beh.get("current_active_role_id"),
@@ -499,6 +509,20 @@ async def debug_proactive():
         "recent_messages": [{"content": m["content"], "role": m.get("role_name"), "at": m["created_at"]} for m in recent],
         "scheduler_running": scheduler.running
     }
+
+@app.post("/proactive/test")
+async def test_proactive():
+    """手动触发一次主动思考（测试用）"""
+    global last_pt, next_int
+    # 重置时间，强制触发
+    last_pt = None
+    next_int = None
+    await proactive_thinking()
+    # 返回最新消息
+    recent = supabase.table("proactive_messages").select("content,role_name,created_at").order("created_at", desc=True).limit(1).execute().data
+    if recent:
+        return {"triggered": True, "message": recent[0]}
+    return {"triggered": True, "message": None, "note": "AI决定PASS，没有发消息"}
 
 class ProactiveRequest(BaseModel):
     role_id: Optional[str] = None

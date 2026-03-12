@@ -77,6 +77,7 @@ type ChatSettings = {
 type UserProfile = {
   nickname: string;
   signature?: string;
+  avatar?: string; // dataURL
 };
 
 const useLocalState = <T,>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
@@ -991,23 +992,50 @@ const App: React.FC = () => {
             ↑ 加载更早的消息（还有 {currentMessages.length - visibleMessageCount} 条）
           </button>
         )}
-        {currentMessages.slice(-visibleMessageCount).map((m) => (
-          <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
-            {deleteMode && (
-              <input
-                type="checkbox"
-                checked={selectedMessages.has(m.id)}
-                onChange={() => toggleMessageSelection(m.id)}
-                className="w-4 h-4 cursor-pointer"
-              />
-            )}
-            <div 
-              className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
-              onClick={() => deleteMode && toggleMessageSelection(m.id)}
-              dangerouslySetInnerHTML={{ __html: m.content }}
-            />
-          </div>
-        ))}
+        {currentMessages.slice(-visibleMessageCount).map((m, idx, arr) => {
+          // 时间显示逻辑：与上一条消息间隔超过5分钟则显示时间
+          const showTime = idx === 0 || (m.createdAt - arr[idx - 1].createdAt > 5 * 60 * 1000);
+          const msgDate = new Date(m.createdAt);
+          const now = new Date();
+          const isCurrentYear = msgDate.getFullYear() === now.getFullYear();
+          const timeStr = isCurrentYear
+            ? msgDate.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : msgDate.toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          
+          // 头像：助手用角色头像，用户用用户头像
+          const avatar = m.role === 'assistant' ? currentRole?.avatar : userProfile.avatar;
+          
+          return (
+            <div key={m.id}>
+              {showTime && (
+                <div className="text-center text-xs text-slate-400 my-2">{timeStr}</div>
+              )}
+              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-end gap-2`}>
+                {deleteMode && (
+                  <input
+                    type="checkbox"
+                    checked={selectedMessages.has(m.id)}
+                    onChange={() => toggleMessageSelection(m.id)}
+                    className="w-4 h-4 cursor-pointer"
+                  />
+                )}
+                {/* 助手头像（左侧） */}
+                {m.role === 'assistant' && avatar && (
+                  <img src={avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                )}
+                <div 
+                  className={`max-w-[70%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+                  onClick={() => deleteMode && toggleMessageSelection(m.id)}
+                  dangerouslySetInnerHTML={{ __html: m.content }}
+                />
+                {/* 用户头像（右侧） */}
+                {m.role === 'user' && avatar && (
+                  <img src={avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
+                )}
+              </div>
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
       <div className="card glass p-3 flex items-center gap-2">
@@ -1120,6 +1148,52 @@ const App: React.FC = () => {
 
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">用户信息</div>
+          {/* 用户头像上传 */}
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              {userProfile.avatar ? (
+                <img src={userProfile.avatar} alt="头像" className="w-16 h-16 rounded-full object-cover border-2 border-white/50" />
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">
+                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+              )}
+              <label className="absolute bottom-0 right-0 w-6 h-6 bg-slate-800 rounded-full flex items-center justify-center cursor-pointer hover:bg-slate-700">
+                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        setUserProfile({ ...userProfile, avatar: ev.target?.result as string });
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div className="text-sm text-slate-600">
+              <div>点击上传头像</div>
+              {userProfile.avatar && (
+                <button 
+                  className="text-red-500 text-xs mt-1"
+                  onClick={() => setUserProfile({ ...userProfile, avatar: undefined })}
+                >
+                  删除头像
+                </button>
+              )}
+            </div>
+          </div>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             昵称
             <input
