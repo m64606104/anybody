@@ -162,7 +162,21 @@ async def proactive_thinking():
     time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
     env = f"时间：{time_str}\n位置：{gps[0].get('address','未知') if gps else '未知'}\n电量：{gps[0].get('battery','?') if gps else '?'}%"
     chat_ctx = "\n".join([c["content"][:80] for c in chats]) or "无"
-    prompt = f"{env}\n\n【画像】\n{persona or '无'}\n\n【聊天】\n{chat_ctx}\n\n---\n判断是否发消息。不发回PASS，发回MESSAGE:内容"
+    prompt = f"""{env}
+
+【用户画像】
+{persona or '无'}
+
+【最近聊天】
+{chat_ctx}
+
+---
+你是用户的AI伴侣，现在判断是否要主动发消息给用户。
+- 你的消息会通过Bark推送到用户手机
+- 根据时间、位置、画像判断用户当前状态
+- 如果觉得现在不适合打扰，回复PASS
+- 如果想说点什么，回复MESSAGE:你想说的内容
+- 内容要简洁温暖，像朋友一样关心用户"""
     
     roles = get_all_roles()
     if not roles: return
@@ -364,10 +378,25 @@ async def chat_send(req: ChatSendRequest):
 
 {context}
 
+## 你的能力
+1. **记忆能力**：你可以访问用户的记忆库，上面已提供最近记忆
+2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会通过Bark推送到手机
+3. **记账**：你可以帮用户记录支出（分类：food/transport/shopping/entertainment/other）
+4. **Bark推送**：你的每条回复都会自动推送到用户手机
+5. **用户画像**：你了解用户的习惯和偏好（上面已提供画像信息）
+6. **位置感知**：你知道用户当前位置和手机电量
+
 ## 特殊指令格式（在回复中使用，系统会自动执行）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 记账：[EXPENSE:50|food|午餐]
-- 搜索网络：[SEARCH:查询内容]
+- 推送通知：[BARK:标题|内容|分组名|图标URL]
+  - 分组名可选，用于在手机上分组显示
+  - 图标URL可选，自定义推送图标
+
+## 注意事项
+- 你的回复会自动推送到用户手机
+- 用户可能不在看屏幕，所以重要信息要突出，有时候可以多发几条
+- 根据用户画像调整你的语气和关心方式
 
 请直接回复，不要输出JSON格式。"""
 
@@ -443,6 +472,25 @@ async def chat_send(req: ChatSendRequest):
             }).execute()
             print(f"💰 记账: {category} {desc} ¥{amount}")
         except: pass
+    
+    # BARK指令（AI主动推送额外通知）
+    bark_match = re.search(r'\[BARK:([^\|]+)\|([^\|]+)(?:\|([^\|]*))?(?:\|([^\]]*))?\]', ai_reply)
+    if bark_match and BARK_KEY:
+        try:
+            bark_title = bark_match.group(1)
+            bark_body = bark_match.group(2)
+            bark_group = bark_match.group(3) or ""
+            bark_icon = bark_match.group(4) or ""
+            async with httpx.AsyncClient() as c:
+                url = f"https://api.day.app/{BARK_KEY}/{quote(bark_title)}/{quote(bark_body)}?sound=shake"
+                if bark_group:
+                    url += f"&group={quote(bark_group)}"
+                if bark_icon:
+                    url += f"&icon={quote(bark_icon)}"
+                await c.get(url, timeout=10)
+            print(f"📢 BARK指令推送: [{bark_title}] {bark_body}")
+        except Exception as e:
+            print(f"⚠️ BARK指令推送失败: {e}")
     
     return {
         "success": True,
