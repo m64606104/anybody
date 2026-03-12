@@ -570,17 +570,21 @@ async def summarize_notifications():
         print(f"❌ 通知总结失败: {e}")
 
 # ============ 主动思考协程 ============
-# 存储上次主动思考的时间
+# 存储上次主动思考的时间和目标间隔
 last_proactive_time = None
+next_target_interval = None  # 固定目标间隔，避免每次随机
 
 async def proactive_thinking():
     """随机间隔主动思考，决定是否发送消息
     白天(7:00-23:00): 30分钟-2小时随机
     夜间(23:00-7:00): 3-5小时随机
     """
-    global last_proactive_time
+    global last_proactive_time, next_target_interval
+    
+    print(f"🔄 主动思考检查开始...")
     
     if not supabase:
+        print("❌ Supabase未连接，跳过主动思考")
         return
     
     try:
@@ -603,6 +607,7 @@ async def proactive_thinking():
             pref = freq_result.data[0]["metadata"]
             min_interval = pref.get("min_interval", 60)
             max_interval = pref.get("max_interval", 120)
+            print(f"📊 使用用户偏好间隔: {min_interval}-{max_interval}分钟")
             # 检查是否在禁止时段
             no_disturb_start = pref.get("no_disturb_start")
             no_disturb_end = pref.get("no_disturb_end")
@@ -618,16 +623,24 @@ async def proactive_thinking():
                 min_interval, max_interval = 120, 240
             else:
                 min_interval, max_interval = 30, 120
+            print(f"📊 使用默认间隔: {min_interval}-{max_interval}分钟 (当前北京时间{current_hour}点)")
         
-        # 根据间隔决定是否执行
+        # 根据间隔决定是否执行（使用固定目标间隔）
         if last_proactive_time:
             elapsed_minutes = (now - last_proactive_time).total_seconds() / 60
-            target_interval = random.randint(min_interval, max_interval)
-            if elapsed_minutes < target_interval:
+            # 如果没有目标间隔，生成一个
+            if next_target_interval is None:
+                next_target_interval = random.randint(min_interval, max_interval)
+            print(f"⏱️ 已过{elapsed_minutes:.1f}分钟，目标{next_target_interval}分钟")
+            if elapsed_minutes < next_target_interval:
                 return
+        else:
+            print("🆕 首次执行主动思考")
         
-        # 更新上次执行时间
+        # 更新上次执行时间，并生成下一个目标间隔
         last_proactive_time = now
+        next_target_interval = random.randint(min_interval, max_interval)
+        print(f"✅ 开始执行主动思考，下次间隔{next_target_interval}分钟")
         
         # 获取最近的记忆
         memories_result = supabase.table("memories")\
