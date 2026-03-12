@@ -234,9 +234,7 @@ async def check_reminders():
         else:
             supabase.table("reminders").update({"is_done": True, "is_pushed": True}).eq("id", rem["id"]).execute()
 
-last_pt, next_int = None, None
 async def proactive_thinking():
-    global last_pt, next_int
     if not supabase: return
     now = datetime.utcnow()
     hr = (now.hour + 8) % 24
@@ -244,16 +242,20 @@ async def proactive_thinking():
     mi, ma = int(beh.get("min_interval") or 30), int(beh.get("max_interval") or 120)
     if 3 <= hr < 7: mi, ma = 180, 300
     
+    # 免打扰时段
     nds, nde = beh.get("no_disturb_start"), beh.get("no_disturb_end")
     if nds and nde:
         nds, nde = int(nds), int(nde)
         if (nds <= hr < nde) if nds < nde else (hr >= nds or hr < nde): return
     
-    if last_pt:
-        if next_int is None: next_int = random.randint(mi, ma)
-        if (now - last_pt).total_seconds()/60 < next_int: return
-    
-    last_pt, next_int = now, random.randint(mi, ma)
+    # 从数据库获取上次发送时间（避免服务器重启后重置）
+    last_msg = supabase.table("proactive_messages").select("created_at").order("created_at", desc=True).limit(1).execute().data
+    if last_msg:
+        last_time = datetime.fromisoformat(last_msg[0]["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
+        minutes_since = (now - last_time).total_seconds() / 60
+        next_interval = random.randint(mi, ma)
+        if minutes_since < next_interval:
+            return  # 还没到下次发送时间
     
     # 获取完整资料库
     context = get_all_context()
