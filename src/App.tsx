@@ -21,6 +21,8 @@ import {
   createScheduleActive,
   parseScheduleActiveFromText,
   removeScheduleActiveFromText,
+  parseSetActiveFromText,
+  removeSetActiveFromText,
   deleteMemoryByContent,
   removeQueryFromText,
   loadSyncData,
@@ -41,6 +43,7 @@ type Role = {
   examples?: string;
   memory?: string;
   isHomeAssistant?: boolean; // 是否作为首页AI助手
+  hasActivePermission?: boolean; // 是否拥有主动联系权限（用户授权）
 };
 
 type Chat = {
@@ -176,10 +179,29 @@ const App: React.FC = () => {
         const result = await loadSyncData();
         if (result.found && result.data) {
           console.log('☁️ 从云端加载数据:', result.data.updated_at);
-          // 只有云端数据比本地新才覆盖
-          if (result.data.chats?.length) setChats(result.data.chats);
-          if (result.data.messages && Object.keys(result.data.messages).length) setMessagesMap(result.data.messages);
-          if (result.data.roles?.length) setRoles(result.data.roles);
+          // 合并云端数据和本地数据（避免覆盖本地新建的角色/聊天）
+          const cloudData = result.data;
+          if (cloudData.roles?.length) {
+            setRoles((localRoles) => {
+              const cloudRoleIds = new Set(cloudData.roles!.map((r: Role) => r.id));
+              const localOnlyRoles = localRoles.filter(r => !cloudRoleIds.has(r.id));
+              // 云端角色 + 本地独有的角色
+              return [...cloudData.roles!, ...localOnlyRoles];
+            });
+          }
+          if (cloudData.chats?.length) {
+            setChats((localChats) => {
+              const cloudChatIds = new Set(cloudData.chats!.map((c: Chat) => c.id));
+              const localOnlyChats = localChats.filter(c => !cloudChatIds.has(c.id));
+              return [...cloudData.chats!, ...localOnlyChats];
+            });
+          }
+          if (cloudData.messages && Object.keys(cloudData.messages).length) {
+            setMessagesMap((localMessages) => ({
+              ...localMessages,
+              ...cloudData.messages
+            }));
+          }
           if (result.data.api_settings?.apiKey) setApiSettings(result.data.api_settings);
           if (result.data.chat_settings?.bufferMs) setChatSettings(result.data.chat_settings);
           if (result.data.user_profile?.nickname) setUserProfile(result.data.user_profile);
@@ -431,6 +453,7 @@ ${timeInfo}
 ## 特殊指令格式（在回复中使用，系统会自动执行）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]（用于"提醒我做某事"、"定个闹钟"等固定提醒）
 - 预约主动联系：[SCHEDULE_ACTIVE:2026-03-12T08:00:00|话题|上下文]（用于"明天来问问我"、"找我聊聊"等主动关怀）
+- 获取主动权：[SET_ACTIVE:true]（当用户说"你要多找我"、"你要主动联系我"时使用，获得主动发消息的权限）
 - 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
 - 记账：[EXPENSE:50|food|午餐]
 - 搜索网络：[SEARCH:查询内容]
@@ -438,7 +461,8 @@ ${timeInfo}
 
 ## 闹钟 vs 主动联系的区别（重要）
 - **闹钟[REMINDER]**：用户明确说"提醒我"、"定个闹钟"、"别忘了"时使用。到点响铃，内容固定。
-- **主动联系[SCHEDULE_ACTIVE]**：用户说"你明天来问问我进度"、"你找我聊聊天"、"关注一下我"时使用。这是你作为助手的自我职责，到时候你会根据话题主动找用户聊天，内容是动态生成的。
+- **主动联系[SCHEDULE_ACTIVE]**：用户说"你明天来问问我进度"、"你找我聊聊天"时使用。预约未来某个时间主动找用户聊天。
+- **获取主动权[SET_ACTIVE:true]**：用户说"你要多找我"、"你要主动联系我"时使用。获得主动权后，系统会随机让你主动发消息给用户。
 ${memoryContext}
 ${screenCaptureContext}
 ${userStatusContext}
@@ -627,6 +651,24 @@ ${rolePrompt || '（无特定角色设定）'}
         .catch(e => console.warn('❌ 预约主动联系创建失败:', e));
     }
     
+    // 解析SET_ACTIVE指令（授权当前角色主动联系权限）
+    const setActiveValue = parseSetActiveFromText(content);
+    if (setActiveValue !== null) {
+      const chat = chats.find((c) => c.id === chatId);
+      if (chat?.roleId) {
+        console.log(`🔑 ${setActiveValue ? '授权' : '取消'}角色主动联系权限:`, chat.roleId);
+        // 检查当前有多少角色拥有主动权（最多2个）
+        const currentActiveCount = roles.filter(r => r.hasActivePermission).length;
+        if (setActiveValue && currentActiveCount >= 2) {
+          console.log('⚠️ 主动权名额已满（最多2个），需要先取消其他角色的主动权');
+        } else {
+          setRoles((prev) => prev.map((r) => 
+            r.id === chat.roleId ? { ...r, hasActivePermission: setActiveValue } : r
+          ));
+        }
+      }
+    }
+    
     // 移除所有指令后的干净文本
     let cleanContent = removeReminderFromText(content);
     cleanContent = removeExpenseFromText(cleanContent);
@@ -634,6 +676,7 @@ ${rolePrompt || '（无特定角色设定）'}
     cleanContent = removeEventFromText(cleanContent);
     cleanContent = removeQueryFromText(cleanContent);
     cleanContent = removeScheduleActiveFromText(cleanContent);
+    cleanContent = removeSetActiveFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
@@ -988,8 +1031,19 @@ ${rolePrompt || '（无特定角色设定）'}
   };
 
   // 生成主动消息（切换到主页时触发）
+  // 优先选择拥有主动权的角色，否则使用首页助手角色
   const generateProactiveMessage = async () => {
-    if (!homeAssistantRole || !apiSettings.apiKey || !apiSettings.model) return;
+    if (!apiSettings.apiKey || !apiSettings.model) return;
+    
+    // 获取所有拥有主动权的角色
+    const activeRoles = roles.filter(r => r.hasActivePermission);
+    // 如果没有拥有主动权的角色，使用首页助手角色
+    const candidateRoles = activeRoles.length > 0 ? activeRoles : (homeAssistantRole ? [homeAssistantRole] : []);
+    if (candidateRoles.length === 0) return;
+    
+    // 随机选择一个角色发消息
+    const selectedRole = candidateRoles[Math.floor(Math.random() * candidateRoles.length)];
+    console.log('🎯 选中角色发送主动消息:', selectedRole.name, selectedRole.hasActivePermission ? '(有主动权)' : '(首页助手)');
     
     const hour = new Date().getHours();
     let timeContext = '';
@@ -1002,13 +1056,13 @@ ${rolePrompt || '（无特定角色设定）'}
     else timeContext = '现在是深夜，用户可能该休息了';
 
     // 获取最近的聊天记录作为上下文
-    const chat = chats.find((c) => c.roleId === homeAssistantRole.id);
+    const chat = chats.find((c) => c.roleId === selectedRole.id);
     const recentMessages = chat ? (messagesMap[chat.id] || []).slice(-5) : [];
     const chatContext = recentMessages.length > 0 
       ? `最近的对话记录：\n${recentMessages.map(m => `${m.role === 'user' ? '用户' : '你'}：${m.content}`).join('\n')}`
       : '这是第一次打招呼，还没有对话记录';
 
-    const rolePrompt = buildRolePrompt(homeAssistantRole);
+    const rolePrompt = buildRolePrompt(selectedRole);
     
     const systemPrompt = `你是用户的AI助手，以下是你的角色设定：
 ${rolePrompt}
@@ -1039,19 +1093,19 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         const data = await resp.json();
         const content = data?.choices?.[0]?.message?.content?.trim();
         if (content) {
-          // 添加到气泡显示
-          setAssistantBubbles((prev) => [...prev, { id: uuid(), content, createdAt: Date.now() }]);
+          // 添加到气泡显示（带上角色名）
+          setAssistantBubbles((prev) => [...prev, { id: uuid(), content: `[${selectedRole.name}] ${content}`, createdAt: Date.now() }]);
           
           // 同时记录到聊天记录中
-          let chat = chats.find((c) => c.roleId === homeAssistantRole.id);
-          if (!chat) {
+          let roleChat = chats.find((c) => c.roleId === selectedRole.id);
+          if (!roleChat) {
             // 如果没有对应聊天，创建一个
-            chat = { id: uuid(), title: homeAssistantRole.name, roleId: homeAssistantRole.id };
-            setChats((prev) => [chat!, ...prev]);
-            setMessagesMap((prev) => ({ ...prev, [chat!.id]: [] }));
+            roleChat = { id: uuid(), title: selectedRole.name, roleId: selectedRole.id };
+            setChats((prev) => [roleChat!, ...prev]);
+            setMessagesMap((prev) => ({ ...prev, [roleChat!.id]: [] }));
           }
           // 使用pushAssistantChunkWithUnread记录消息（会自动处理未读状态）
-          pushAssistantChunkWithUnread(chat.id, content);
+          pushAssistantChunkWithUnread(roleChat.id, content);
         }
       }
     } catch (e) {

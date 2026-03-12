@@ -261,6 +261,25 @@ export function removeScheduleActiveFromText(text: string): string {
 }
 
 /**
+ * 解析AI回复中的SET_ACTIVE指令（授权角色主动联系权限）
+ * 格式: [SET_ACTIVE:true] 或 [SET_ACTIVE:false]
+ */
+export function parseSetActiveFromText(text: string): boolean | null {
+  const match = text.match(/\[SET_ACTIVE:(true|false)\]/i);
+  if (match) {
+    return match[1].toLowerCase() === 'true';
+  }
+  return null;
+}
+
+/**
+ * 移除SET_ACTIVE指令
+ */
+export function removeSetActiveFromText(text: string): string {
+  return text.replace(/\[SET_ACTIVE:(true|false)\]/gi, '').trim();
+}
+
+/**
  * 解析AI回复中的REMINDER指令
  * 格式: [REMINDER:2026-03-12T08:00:00|开会]
  * 返回: { time: Date, content: string } 或 null
