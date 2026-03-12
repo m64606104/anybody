@@ -497,73 +497,162 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取完整资料库（按role_id过滤聊天记录）
+    # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 构建系统提示词
+    # 4. 定义AI可用的工具（Function Calling）
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_chat_history",
+                "description": "搜索聊天记录。当用户问到之前聊过的内容、历史对话、过去说过的话时使用。可以搜索关键词或获取指定数量的历史记录。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string", "description": "搜索关键词，留空则获取最近记录"},
+                        "limit": {"type": "integer", "description": "返回记录数量，默认50，最大500"}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_memories",
+                "description": "搜索记忆库。当用户问到之前记住的事情、保存的信息时使用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string", "description": "搜索关键词"},
+                        "limit": {"type": "integer", "description": "返回记录数量，默认20"}
+                    }
+                }
+            }
+        }
+    ]
+    
+    # 工具执行函数
+    def execute_tool(tool_name: str, args: dict) -> str:
+        if tool_name == "search_chat_history":
+            keyword = args.get("keyword", "")
+            limit = min(args.get("limit", 50), 500)
+            query = supabase.table("chat_messages").select("sender,content,created_at")
+            if req.role_id:
+                query = query.eq("role_id", req.role_id)
+            if keyword:
+                query = query.ilike("content", f"%{keyword}%")
+            results = query.order("created_at", desc=True).limit(limit).execute().data or []
+            if not results:
+                return f"没有找到包含'{keyword}'的聊天记录" if keyword else "没有找到聊天记录"
+            # 格式化结果
+            lines = []
+            for r in reversed(results):
+                try:
+                    t = datetime.fromisoformat(r['created_at'].replace("Z", ""))
+                    t_beijing = t + timedelta(hours=8)
+                    time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+                except:
+                    time_str = ""
+                lines.append(f"[{time_str}] [{r['sender']}] {r['content'][:200]}")
+            return f"找到{len(results)}条记录：\n" + "\n".join(lines)
+        
+        elif tool_name == "search_memories":
+            keyword = args.get("keyword", "")
+            limit = min(args.get("limit", 20), 100)
+            query = supabase.table("memories").select("content,category,title,created_at")
+            if keyword:
+                query = query.ilike("content", f"%{keyword}%")
+            results = query.order("created_at", desc=True).limit(limit).execute().data or []
+            if not results:
+                return f"没有找到包含'{keyword}'的记忆" if keyword else "没有找到记忆"
+            lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in results]
+            return f"找到{len(results)}条记忆：\n" + "\n".join(lines)
+        
+        return "未知工具"
+    
+    # 5. 构建系统提示词
     system_prompt = f"""{role_prompt}
 
 {context}
 
-## 可用能力
-- 记忆库：上面已提供最近记忆
-- 闹钟：到时间会通过Bark推送到手机
-- 记账：分类有food/transport/shopping/entertainment/other
-- Bark推送：回复会自动推送到用户手机
-- 位置感知：上面已提供当前位置和电量
-- HTML渲染：你可以直接输出HTML代码，会在聊天中渲染显示
-- 代码生成：用户让你写代码时直接输出，用```包裹
+## 重要：你可以主动查询数据库
+你有能力随时查询聊天记录和记忆库。当用户问到之前聊过的内容、历史信息、过去的事情时，你应该主动使用工具去查询，而不是说"我无法查看"。
 
-## 特殊指令格式（在回复中使用，系统会自动执行）
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
-- 记账：[EXPENSE:50|food|午餐]
-- 推送通知：[BARK:标题|内容|分组名|图标URL]
+## 可用工具
+- search_chat_history: 搜索聊天记录，可以按关键词搜索或获取最近N条
+- search_memories: 搜索记忆库
 
-## HTML示例
-如果用户要求生成网页/交互内容，可以直接输出HTML：
-<div style="padding:10px;background:#f0f0f0;border-radius:8px">内容</div>
-<button onclick="alert('点击')">按钮</button>
+## 其他能力
+- 闹钟：[REMINDER:时间|内容]
+- 记账：[EXPENSE:金额|分类|描述]
+- Bark推送：[BARK:标题|内容|分组|图标]
+- HTML渲染：可以直接输出HTML代码
 
-请直接回复。"""
+请直接回复，需要查询历史时主动使用工具。"""
 
-    # 5. 构建消息历史（支持图片识别）
+    # 6. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]
     if req.history:
-        for h in req.history[-20:]:  # 最多20条历史
+        for h in req.history[-20:]:
             messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
     
-    # 检查用户消息是否包含图片（dataURL格式）
+    # 检查用户消息是否包含图片
     import re
     img_pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>'
     img_matches = re.findall(img_pattern, req.message)
     
     if img_matches:
-        # 有图片，使用vision格式
         content_parts = []
-        # 提取纯文本（去掉img标签）
         text_only = re.sub(img_pattern, '', req.message).strip()
         if text_only:
             content_parts.append({"type": "text", "text": text_only})
-        # 添加图片
         for img_url in img_matches:
             content_parts.append({"type": "image_url", "image_url": {"url": img_url}})
         messages.append({"role": "user", "content": content_parts})
     else:
         messages.append({"role": "user", "content": req.message})
     
-    # 6. 调用AI（有图片时使用vision模型）
-    model = "gpt-4o" if img_matches else OPENAI_MODEL  # 有图片用gpt-4o
+    # 7. 调用AI（支持多轮工具调用）
+    model = "gpt-4o" if img_matches else OPENAI_MODEL
+    ai_reply = ""
+    max_tool_calls = 5  # 最多5轮工具调用
+    
     try:
-        async with httpx.AsyncClient() as c:
-            resp = await c.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"model": model, "messages": messages, "max_tokens": 4096},
-                timeout=120.0  # 图片识别可能需要更长时间
-            )
-            if resp.status_code != 200:
-                raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
-            ai_reply = resp.json()["choices"][0]["message"]["content"]
+        for _ in range(max_tool_calls):
+            async with httpx.AsyncClient() as c:
+                resp = await c.post(
+                    f"{OPENAI_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json={"model": model, "messages": messages, "tools": tools, "max_tokens": 4096},
+                    timeout=120.0
+                )
+                if resp.status_code != 200:
+                    raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
+                
+                result = resp.json()["choices"][0]
+                msg = result["message"]
+                
+                # 检查是否有工具调用
+                if msg.get("tool_calls"):
+                    messages.append(msg)  # 添加助手消息（包含工具调用）
+                    for tool_call in msg["tool_calls"]:
+                        func_name = tool_call["function"]["name"]
+                        func_args = json.loads(tool_call["function"]["arguments"])
+                        print(f"🔧 AI调用工具: {func_name}({func_args})")
+                        tool_result = execute_tool(func_name, func_args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": tool_result
+                        })
+                else:
+                    # 没有工具调用，返回最终回复
+                    ai_reply = msg.get("content", "")
+                    break
+        
+        if not ai_reply:
+            ai_reply = "处理超时，请重试"
     except Exception as e:
         ai_reply = f"调用AI失败：{str(e)}"
     
