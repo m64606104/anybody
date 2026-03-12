@@ -532,7 +532,7 @@ const App: React.FC = () => {
     try {
       // 按类型分别获取记忆（避免互相挤掉）
       // 聊天记录用本地的（更完整），截屏和GPS从Supabase获取
-      const memoriesResult = await getMemoriesByTypes(20, 50, 10);
+      const memoriesResult = await getMemoriesByTypes(20, 50, 10, authUser?.id);
       
       // 截屏数据（微信、美团、小红书、咸鱼等）- 这是关键数据，从Supabase获取
       if (memoriesResult.screen_captures?.length) {
@@ -768,7 +768,7 @@ ${rolePrompt || '（无特定角色设定）'}
     if (queryKeyword) {
       console.log('🧠 检测到QUERY指令:', queryKeyword);
       try {
-        const queryResult = await searchMemory(queryKeyword, 10);
+        const queryResult = await searchMemory(queryKeyword, 10, undefined, authUser?.id);
         if (queryResult.memories?.length) {
           console.log('🧠 搜索结果:', queryResult.memories.map(m => m.content.slice(0, 50)));
         } else {
@@ -826,14 +826,14 @@ ${rolePrompt || '（无特定角色设定）'}
     updateMessages(chatId, (prev) => [...prev, message]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: cleanContent } : c)));
     
-    // 存储AI回复到记忆（异步，不阻塞）
+    // 存储AI回复到记忆（异步，不阻塞，按user_id隔离）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
     storeMemory(cleanContent, 'chat', { 
       chatId, 
       role: 'assistant',
       roleName: role?.name || '未知角色'
-    }).catch(e => console.warn('存储记忆失败:', e));
+    }, false, authUser?.id).catch(e => console.warn('存储记忆失败:', e));
     
     // 如果用户不在该聊天页，加入未读消息
     if (selectedChatId !== chatId || screen !== 'chat') {
@@ -865,14 +865,14 @@ ${rolePrompt || '（无特定角色设定）'}
     console.log('  用户消息:', userMsg);
     console.log('  当前缓冲区:', chatBuffers.current[chatId] || []);
     
-    // 存储用户消息到记忆（异步，不阻塞）
+    // 存储用户消息到记忆（异步，不阻塞，按user_id隔离）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
     storeMemory(userMsg, 'chat', { 
       chatId, 
       role: 'user',
       roleName: role?.name || '未知角色'
-    }).catch(e => console.warn('存储记忆失败:', e));
+    }, false, authUser?.id).catch(e => console.warn('存储记忆失败:', e));
     
     // 立即显示用户消息
     const newMessage: Message = { id: uuid(), role: 'user', content: userMsg, createdAt: Date.now() };

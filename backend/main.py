@@ -41,11 +41,13 @@ class MemoryCreate(BaseModel):
     type: str = "chat"  # chat, event, note 等
     metadata: Optional[dict] = None
     is_important: bool = False
+    user_id: Optional[str] = None  # 用户ID，用于多用户数据隔离
 
 class MemorySearch(BaseModel):
     query: str
     limit: int = 10
     type: Optional[str] = None  # 可选过滤类型
+    user_id: Optional[str] = None  # 用户ID，用于多用户数据隔离
 
 class ReminderCreate(BaseModel):
     user_id: str
@@ -244,24 +246,27 @@ app.add_middleware(
 # ============ 记忆功能 ============
 @app.post("/memory/store")
 async def store_memory(memory: MemoryCreate):
-    """存储记忆（适配现有表结构）"""
+    """存储记忆（适配现有表结构，支持user_id隔离）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 存入数据库（适配现有表结构：id, created_at, type, content, metadata, is_important）
+    # 存入数据库（适配现有表结构：id, created_at, type, content, metadata, is_important, user_id）
     data = {
         "type": memory.type,
         "content": memory.content,
         "metadata": memory.metadata or {},
         "is_important": memory.is_important
     }
+    # 如果提供了user_id，添加到数据中
+    if memory.user_id:
+        data["user_id"] = memory.user_id
     
     result = supabase.table("memories").insert(data).execute()
     return {"success": True, "id": result.data[0]["id"] if result.data else None}
 
 @app.post("/memory/search")
 async def search_memory(search: MemorySearch):
-    """搜索记忆（关键词搜索）"""
+    """搜索记忆（关键词搜索，支持user_id隔离）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
@@ -269,27 +274,30 @@ async def search_memory(search: MemorySearch):
     query = supabase.table("memories").select("*")
     if search.type:
         query = query.eq("type", search.type)
+    # 按user_id过滤
+    if search.user_id:
+        query = query.eq("user_id", search.user_id)
     result = query.ilike("content", f"%{search.query}%").order("created_at", desc=True).limit(search.limit).execute()
     
     return {"memories": result.data}
 
 @app.get("/memory/recent")
-async def get_recent_memories(limit: int = 10):
-    """获取最近的记忆（用于注入AI上下文）"""
+async def get_recent_memories(limit: int = 10, user_id: str = None):
+    """获取最近的记忆（用于注入AI上下文，支持user_id隔离）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    result = supabase.table("memories")\
-        .select("*")\
-        .order("created_at", desc=True)\
-        .limit(limit)\
-        .execute()
+    query = supabase.table("memories").select("*")
+    # 按user_id过滤
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = query.order("created_at", desc=True).limit(limit).execute()
     
     return {"memories": result.data}
 
 @app.get("/memory/by_types")
-async def get_memories_by_types(chat_limit: int = 20, capture_limit: int = 50, gps_limit: int = 10):
-    """按类型分别获取记忆，避免互相挤掉
+async def get_memories_by_types(chat_limit: int = 20, capture_limit: int = 50, gps_limit: int = 10, user_id: str = None):
+    """按类型分别获取记忆，避免互相挤掉，支持user_id隔离
     
     默认值：聊天20条（本地有完整的，这里只是补充）、截屏50条、GPS10条
     """
@@ -299,30 +307,24 @@ async def get_memories_by_types(chat_limit: int = 20, capture_limit: int = 50, g
     result = {}
     
     # 获取最近聊天记录（本地有完整的，这里只是补充跨设备同步的）
-    chat_result = supabase.table("memories")\
-        .select("*")\
-        .eq("type", "chat")\
-        .order("created_at", desc=True)\
-        .limit(chat_limit)\
-        .execute()
+    chat_query = supabase.table("memories").select("*").eq("type", "chat")
+    if user_id:
+        chat_query = chat_query.eq("user_id", user_id)
+    chat_result = chat_query.order("created_at", desc=True).limit(chat_limit).execute()
     result["chats"] = chat_result.data or []
     
     # 获取最近截屏数据（微信、美团、小红书、咸鱼等）
-    capture_result = supabase.table("memories")\
-        .select("*")\
-        .eq("type", "screen_capture")\
-        .order("created_at", desc=True)\
-        .limit(capture_limit)\
-        .execute()
+    capture_query = supabase.table("memories").select("*").eq("type", "screen_capture")
+    if user_id:
+        capture_query = capture_query.eq("user_id", user_id)
+    capture_result = capture_query.order("created_at", desc=True).limit(capture_limit).execute()
     result["screen_captures"] = capture_result.data or []
     
     # 获取最近GPS记录
-    gps_result = supabase.table("memories")\
-        .select("*")\
-        .eq("type", "gps_history")\
-        .order("created_at", desc=True)\
-        .limit(gps_limit)\
-        .execute()
+    gps_query = supabase.table("memories").select("*").eq("type", "gps_history")
+    if user_id:
+        gps_query = gps_query.eq("user_id", user_id)
+    gps_result = gps_query.order("created_at", desc=True).limit(gps_limit).execute()
     result["gps"] = gps_result.data or []
     
     return result

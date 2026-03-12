@@ -39,64 +39,69 @@ export interface ProactiveMessageRequest {
 // ============ API 函数 ============
 
 /**
- * 存储记忆
+ * 存储记忆（支持user_id隔离）
  */
 export async function storeMemory(
   content: string,
   type: string = 'chat',
   metadata?: Record<string, any>,
-  isImportant: boolean = false
+  isImportant: boolean = false,
+  userId?: string
 ): Promise<{ success: boolean; id?: number }> {
   const resp = await fetch(`${API_BASE_URL}/memory/store`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, type, metadata, is_important: isImportant }),
+    body: JSON.stringify({ content, type, metadata, is_important: isImportant, user_id: userId }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 搜索记忆
+ * 搜索记忆（支持user_id隔离）
  */
 export async function searchMemory(
   query: string,
   limit = 10,
-  type?: string
+  type?: string,
+  userId?: string
 ): Promise<{ memories: Memory[] }> {
   const resp = await fetch(`${API_BASE_URL}/memory/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, limit, type }),
+    body: JSON.stringify({ query, limit, type, user_id: userId }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 获取最近记忆（用于注入AI上下文）
+ * 获取最近记忆（用于注入AI上下文，支持user_id隔离）
  */
-export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[] }> {
-  const resp = await fetch(`${API_BASE_URL}/memory/recent?limit=${limit}`);
+export async function getRecentMemories(limit = 10, userId?: string): Promise<{ memories: Memory[] }> {
+  let url = `${API_BASE_URL}/memory/recent?limit=${limit}`;
+  if (userId) url += `&user_id=${encodeURIComponent(userId)}`;
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 按类型分别获取记忆（避免互相挤掉）
+ * 按类型分别获取记忆（避免互相挤掉，支持user_id隔离）
  */
 export async function getMemoriesByTypes(
   chatLimit = 5,
   captureLimit = 3,
-  gpsLimit = 2
+  gpsLimit = 2,
+  userId?: string
 ): Promise<{
   chats: Memory[];
   screen_captures: Memory[];
   gps: Memory[];
 }> {
-  const resp = await fetch(
-    `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`
-  );
+  let url = `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`;
+  if (userId) url += `&user_id=${encodeURIComponent(userId)}`;
+  const resp = await fetch(url);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
