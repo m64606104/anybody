@@ -37,7 +37,6 @@ type Role = {
   tone?: string;
   examples?: string;
   memory?: string;
-  isHomeAssistant?: boolean; // 是否作为首页AI助手
 };
 
 type Chat = {
@@ -155,12 +154,7 @@ const App: React.FC = () => {
   const [deleteMode, setDeleteMode] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [visibleMessageCount, setVisibleMessageCount] = useState(50); // 分页：默认显示50条
-  const [showAssistantChat, setShowAssistantChat] = useState(false); // 流体球小聊天窗口
-  const [assistantInput, setAssistantInput] = useState(''); // 助手聊天输入
-  const [assistantBubbles, setAssistantBubbles] = useState<{id: string; content: string; createdAt: number}[]>([]); // 主动消息气泡
   const [unreadMessages, setUnreadMessages] = useState<Record<string, Message[]>>({}); // 未读消息 {chatId: messages[]}
-  const [showUnreadPreview, setShowUnreadPreview] = useState(false); // 是否展开未读消息预览
-  const [hasTriggeredInitialGreeting, setHasTriggeredInitialGreeting] = useState(false); // 是否已触发首次问候
   const [cloudSyncStatus, setCloudSyncStatus] = useState<'loading' | 'synced' | 'error' | 'offline'>('loading');
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const syncTimeoutRef = useRef<number | null>(null);
@@ -251,18 +245,15 @@ const App: React.FC = () => {
     }
   }, [screen, currentMessages]);
 
-  // 轮询主动消息（每30秒检查一次）
+  // 轮询主动消息（每30秒检查一次）- 主动消息通过Bark推送，这里只是同步到聊天记录
   useEffect(() => {
     const pollProactiveMessages = async () => {
       try {
         const result = await getPendingProactiveMessage();
         if (result.has_message && result.message) {
           console.log('💬 收到主动消息:', result.message);
-          // 找到首页助手角色对应的聊天，或使用第一个聊天
-          const homeRole = roles.find(r => r.isHomeAssistant);
-          const targetChat = homeRole 
-            ? chats.find(c => c.roleId === homeRole.id) 
-            : chats[0];
+          // 使用第一个聊天作为目标
+          const targetChat = chats[0];
           
           if (targetChat) {
             // 推送主动消息到聊天
@@ -295,7 +286,7 @@ const App: React.FC = () => {
     pollProactiveMessages(); // 立即执行一次
     
     return () => clearInterval(intervalId);
-  }, [chats, roles, selectedChatId, screen]);
+  }, [chats, selectedChatId, screen]);
 
   const handleNav = (target: Screen) => setScreen(target);
 
@@ -737,19 +728,6 @@ ${rolePrompt || '（无特定角色设定）'}
     }
   };
 
-  // 设置角色为首页AI助手（只能有一个）
-  const setHomeAssistant = (roleId: string) => {
-    setRoles((prev) => prev.map((r) => ({
-      ...r,
-      isHomeAssistant: r.id === roleId,
-    })));
-  };
-
-  // 获取当前首页AI助手角色
-  const homeAssistantRole = useMemo(() => {
-    return roles.find((r) => r.isHomeAssistant) || null;
-  }, [roles]);
-
   const toggleMessageSelection = (msgId: string) => {
     setSelectedMessages((prev) => {
       const next = new Set(prev);
@@ -892,188 +870,6 @@ ${rolePrompt || '（无特定角色设定）'}
     return '夜深了';
   };
 
-  // 获取AI助手的问候语（基于角色人设）
-  const getAssistantGreeting = () => {
-    if (!homeAssistantRole) return null;
-    const hour = new Date().getHours();
-    let timeGreeting = '';
-    if (hour < 6) timeGreeting = '这么晚还没睡呀';
-    else if (hour < 9) timeGreeting = '早安';
-    else if (hour < 12) timeGreeting = '上午好';
-    else if (hour < 14) timeGreeting = '午安';
-    else if (hour < 18) timeGreeting = '下午好';
-    else if (hour < 22) timeGreeting = '晚上好';
-    else timeGreeting = '夜深了，注意休息哦';
-    
-    return `${timeGreeting}${userProfile.nickname ? `，${userProfile.nickname}` : ''}~`;
-  };
-
-  // 获取AI助手对应的聊天
-  const assistantChat = useMemo(() => {
-    if (!homeAssistantRole) return null;
-    return chats.find((c) => c.roleId === homeAssistantRole.id) || null;
-  }, [chats, homeAssistantRole]);
-
-  const assistantMessages = assistantChat ? (messagesMap[assistantChat.id] || []) : [];
-
-  // 打开AI助手的完整聊天页
-  const openAssistantFullChat = () => {
-    if (!homeAssistantRole) return;
-    let chat = chats.find((c) => c.roleId === homeAssistantRole.id);
-    if (!chat) {
-      // 如果没有对应聊天，创建一个
-      chat = { id: uuid(), title: homeAssistantRole.name, roleId: homeAssistantRole.id };
-      setChats((prev) => [chat!, ...prev]);
-      setMessagesMap((prev) => ({ ...prev, [chat!.id]: [] }));
-    }
-    setSelectedChatId(chat.id);
-    setShowAssistantChat(false);
-    setScreen('chat');
-  };
-
-  // 助手聊天发送消息
-  const handleAssistantSend = () => {
-    if (!assistantInput.trim() || !homeAssistantRole) return;
-    
-    // 确保有对应的聊天
-    let chat = chats.find((c) => c.roleId === homeAssistantRole.id);
-    if (!chat) {
-      chat = { id: uuid(), title: homeAssistantRole.name, roleId: homeAssistantRole.id };
-      setChats((prev) => [chat!, ...prev]);
-      setMessagesMap((prev) => ({ ...prev, [chat!.id]: [] }));
-    }
-    
-    // 使用通用发送函数
-    sendMessageToChat(chat.id, assistantInput.trim());
-    setAssistantInput('');
-  };
-
-  // 关闭气泡
-  const closeBubble = (bubbleId: string) => {
-    setAssistantBubbles((prev) => prev.filter((b) => b.id !== bubbleId));
-  };
-
-  // 点击气泡打开悬浮窗
-  const handleBubbleClick = (bubbleId: string) => {
-    setShowAssistantChat(true);
-    closeBubble(bubbleId);
-  };
-
-  // 生成主动消息（切换到主页时触发）
-  const generateProactiveMessage = async () => {
-    if (!homeAssistantRole || !apiSettings.apiKey || !apiSettings.model) return;
-    
-    const hour = new Date().getHours();
-    let timeContext = '';
-    if (hour < 6) timeContext = '现在是凌晨，用户可能还没睡或者刚醒';
-    else if (hour < 9) timeContext = '现在是早上，用户可能刚起床';
-    else if (hour < 12) timeContext = '现在是上午';
-    else if (hour < 14) timeContext = '现在是中午，可能是午餐时间';
-    else if (hour < 18) timeContext = '现在是下午';
-    else if (hour < 22) timeContext = '现在是晚上';
-    else timeContext = '现在是深夜，用户可能该休息了';
-
-    // 获取最近的聊天记录作为上下文
-    const chat = chats.find((c) => c.roleId === homeAssistantRole.id);
-    const recentMessages = chat ? (messagesMap[chat.id] || []).slice(-5) : [];
-    const chatContext = recentMessages.length > 0 
-      ? `最近的对话记录：\n${recentMessages.map(m => `${m.role === 'user' ? '用户' : '你'}：${m.content}`).join('\n')}`
-      : '这是第一次打招呼，还没有对话记录';
-
-    const rolePrompt = buildRolePrompt(homeAssistantRole);
-    
-    const systemPrompt = `你是用户的AI助手，以下是你的角色设定：
-${rolePrompt}
-
-${timeContext}
-${chatContext}
-${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
-
-请用你的角色人设和语气，生成一条简短的主动问候或关心的话（15-30字左右）。
-要自然、温暖、符合当前时间和上下文。不要太正式。
-只输出问候语本身，不要加引号或其他格式。`;
-
-    try {
-      const resp = await fetch(`${apiSettings.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiSettings.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: apiSettings.model,
-          messages: [{ role: 'system', content: systemPrompt }],
-          max_tokens: 100,
-        }),
-      });
-
-      if (resp.ok) {
-        const data = await resp.json();
-        const content = data?.choices?.[0]?.message?.content?.trim();
-        if (content) {
-          // 添加到气泡显示
-          setAssistantBubbles((prev) => [...prev, { id: uuid(), content, createdAt: Date.now() }]);
-          
-          // 同时记录到聊天记录中
-          let chat = chats.find((c) => c.roleId === homeAssistantRole.id);
-          if (!chat) {
-            // 如果没有对应聊天，创建一个
-            chat = { id: uuid(), title: homeAssistantRole.name, roleId: homeAssistantRole.id };
-            setChats((prev) => [chat!, ...prev]);
-            setMessagesMap((prev) => ({ ...prev, [chat!.id]: [] }));
-          }
-          // 使用pushAssistantChunkWithUnread记录消息（会自动处理未读状态）
-          pushAssistantChunkWithUnread(chat.id, content);
-        }
-      }
-    } catch (e) {
-      console.warn('生成主动消息失败', e);
-    }
-  };
-
-  // 主页停留时随机2-30分钟发一次主动消息
-  const proactiveTimerRef = useRef<number | null>(null);
-  const prevScreenRef = useRef<Screen | null>(null);
-  
-  const scheduleNextProactiveMessage = () => {
-    if (proactiveTimerRef.current) {
-      window.clearTimeout(proactiveTimerRef.current);
-    }
-    // 随机2-30分钟（120000ms - 1800000ms）
-    const randomDelay = Math.floor(Math.random() * (1800000 - 120000 + 1)) + 120000;
-    proactiveTimerRef.current = window.setTimeout(() => {
-      if (homeAssistantRole) {
-        generateProactiveMessage();
-        // 发完后继续调度下一次
-        scheduleNextProactiveMessage();
-      }
-    }, randomDelay);
-  };
-
-  useEffect(() => {
-    // 从聊天页退出到主页时，清空该助手角色的气泡（视为已读）
-    if (prevScreenRef.current === 'chat' && screen === 'home' && homeAssistantRole) {
-      // 检查之前是否在助手的聊天页
-      const assistantChat = chats.find((c) => c.roleId === homeAssistantRole.id);
-      if (assistantChat && selectedChatId === assistantChat.id) {
-        setAssistantBubbles([]);
-      }
-    }
-    
-    // 进入主页时开始随机计时
-    if (screen === 'home' && homeAssistantRole) {
-      scheduleNextProactiveMessage();
-    } else {
-      // 离开主页时清除计时器
-      if (proactiveTimerRef.current) {
-        window.clearTimeout(proactiveTimerRef.current);
-        proactiveTimerRef.current = null;
-      }
-    }
-    
-    prevScreenRef.current = screen;
-  }, [screen, homeAssistantRole, selectedChatId]);
-
   // 进入聊天页时清除该聊天的未读消息
   useEffect(() => {
     if (screen === 'chat' && selectedChatId) {
@@ -1082,16 +878,8 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         delete next[selectedChatId];
         return next;
       });
-      
-      // 如果进入的是助手角色的聊天页，也清空气泡
-      if (homeAssistantRole) {
-        const assistantChat = chats.find((c) => c.roleId === homeAssistantRole.id);
-        if (assistantChat && selectedChatId === assistantChat.id) {
-          setAssistantBubbles([]);
-        }
-      }
     }
-  }, [screen, selectedChatId, homeAssistantRole]);
+  }, [screen, selectedChatId]);
 
   // 计算总未读消息数
   const totalUnreadCount = useMemo(() => {
@@ -1104,175 +892,15 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
     
     return (
       <div className="flex flex-col h-full pt-[120px] pb-6 relative">
-        {/* 问候语区域 - 包含流体球 */}
+        {/* 问候语区域 */}
         <div className="pl-[30px] pr-4 mb-8">
-          <div className="flex items-start gap-4">
-            {/* 线条三角形 AI 助手 */}
-            {homeAssistantRole && (
-              <div 
-                className="relative flex-shrink-0 cursor-pointer group"
-                onClick={() => setShowAssistantChat(!showAssistantChat)}
-              >
-                {/* 三角形容器 */}
-                <div className="relative w-14 h-14 group-hover:scale-110 transition-transform">
-                  {/* 动态线条三角形 SVG */}
-                  <svg viewBox="0 0 100 100" className="w-full h-full">
-                    {/* 外层发光效果 */}
-                    <defs>
-                      <linearGradient id="triangleGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stopColor="#22d3ee" />
-                        <stop offset="50%" stopColor="#3b82f6" />
-                        <stop offset="100%" stopColor="#a855f7" />
-                      </linearGradient>
-                      <filter id="glow">
-                        <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
-                        <feMerge>
-                          <feMergeNode in="coloredBlur"/>
-                          <feMergeNode in="SourceGraphic"/>
-                        </feMerge>
-                      </filter>
-                    </defs>
-                    {/* 三角形路径 - 流动线条效果 */}
-                    <path 
-                      d="M50 10 L90 80 L10 80 Z" 
-                      fill="none" 
-                      stroke="url(#triangleGradient)" 
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      filter="url(#glow)"
-                      className="animate-pulse"
-                    />
-                    {/* 内层三角形 */}
-                    <path 
-                      d="M50 25 L78 70 L22 70 Z" 
-                      fill="none" 
-                      stroke="url(#triangleGradient)" 
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      opacity="0.6"
-                    />
-                    {/* 中心点 */}
-                    <circle cx="50" cy="55" r="4" fill="url(#triangleGradient)" className="animate-pulse" />
-                  </svg>
-                </div>
-                {/* 在线指示点 */}
-                <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-white shadow-sm"></div>
-              </div>
-            )}
-            
-            {/* 问候语和气泡区域 */}
-            <div className="flex-1 space-y-2">
-              {homeAssistantRole ? (
-                <>
-                  <div className="text-2xl font-bold text-slate-800">
-                    {getAssistantGreeting()}
-                  </div>
-                  {userProfile.signature && (
-                    <div className="text-sm text-slate-600 opacity-70">{userProfile.signature}</div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div className="text-3xl font-bold text-slate-800">
-                    {getGreeting()}{userProfile.nickname ? `, ${userProfile.nickname}` : ''}
-                  </div>
-                  {userProfile.signature && (
-                    <div className="text-sm text-slate-600 opacity-70">{userProfile.signature}</div>
-                  )}
-                  <div className="text-xs text-slate-400 mt-1">
-                    在角色设置中开启"设为首页助手"来激活AI助手
-                  </div>
-                </>
-              )}
-            </div>
+          <div className="text-3xl font-bold text-slate-800">
+            {getGreeting()}{userProfile.nickname ? `, ${userProfile.nickname}` : ''}
           </div>
+          {userProfile.signature && (
+            <div className="text-sm text-slate-600 opacity-70 mt-2">{userProfile.signature}</div>
+          )}
         </div>
-
-        {/* AI助手小聊天窗口 */}
-        {showAssistantChat && homeAssistantRole && (
-          <div className="absolute top-[90px] left-4 right-4 z-40 glass rounded-2xl shadow-2xl overflow-hidden border border-white/30">
-            {/* 聊天窗口头部 */}
-            <div className="flex items-center justify-between p-3 border-b border-white/20 bg-white/20">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 overflow-hidden">
-                  {homeAssistantRole.avatar ? (
-                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-white text-sm font-bold">
-                      {homeAssistantRole.name.charAt(0)}
-                    </div>
-                  )}
-                </div>
-                <span className="text-sm font-medium text-slate-700">{homeAssistantRole.name}</span>
-              </div>
-              <div className="flex gap-2">
-                {/* 全屏按钮 */}
-                <button 
-                  className="w-7 h-7 rounded-full bg-white/50 hover:bg-white/70 flex items-center justify-center transition-all"
-                  onClick={openAssistantFullChat}
-                  title="全屏聊天"
-                >
-                  <svg className="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                  </svg>
-                </button>
-                {/* 关闭按钮 */}
-                <button 
-                  className="w-7 h-7 rounded-full bg-white/50 hover:bg-white/70 flex items-center justify-center transition-all"
-                  onClick={() => setShowAssistantChat(false)}
-                >
-                  <svg className="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-            
-            {/* 聊天消息区域 */}
-            <div className="h-48 overflow-y-auto scrollbar p-3 space-y-2">
-              {assistantMessages.length === 0 ? (
-                <div className="text-center text-slate-400 text-sm py-8">
-                  开始和 {homeAssistantRole.name} 聊天吧~
-                </div>
-              ) : (
-                assistantMessages.slice(-10).map((m) => (
-                  <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                    <div 
-                      className={`max-w-[80%] px-3 py-1.5 rounded-xl text-sm ${m.role === 'assistant' ? 'bg-white/70 text-slate-700' : 'bg-slate-700 text-white'}`}
-                      dangerouslySetInnerHTML={{ __html: m.content }}
-                    />
-                  </div>
-                ))
-              )}
-            </div>
-            
-            {/* 输入区域 */}
-            <div className="p-3 border-t border-white/20 bg-white/10">
-              <div className="flex gap-2">
-                <input
-                  className="flex-1 bg-white/60 border border-white/60 rounded-xl px-3 py-2 text-sm focus:outline-none"
-                  placeholder="输入消息..."
-                  value={assistantInput}
-                  onChange={(e) => setAssistantInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleAssistantSend();
-                    }
-                  }}
-                />
-                <button 
-                  className="px-3 py-2 rounded-xl bg-slate-700 text-white text-sm hover:bg-slate-800 transition-colors"
-                  onClick={handleAssistantSend}
-                >
-                  发送
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
         
         {/* 大按钮 - 垂直排列 */}
         <div className="flex flex-col gap-4 mb-auto pr-4 items-end mt-[70px]">
@@ -1295,52 +923,12 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
                 <div className="text-2xl font-semibold mt-2 text-slate-800">{app.title}</div>
               </div>
               
-              {/* 未读消息预览条 - 仅在对话按钮下显示 */}
+              {/* 未读消息数量提示 */}
               {app.action === 'social' && totalUnreadCount > 0 && (
                 <div className="mt-2">
-                  <div 
-                    className="bg-white/60 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/40 cursor-pointer hover:bg-white/80 transition-all"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowUnreadPreview(!showUnreadPreview);
-                    }}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-600">{totalUnreadCount} 条新消息</span>
-                      <svg className={`w-3 h-3 text-slate-500 transition-transform ${showUnreadPreview ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                      </svg>
-                    </div>
+                  <div className="bg-white/60 backdrop-blur-sm rounded-xl px-3 py-2 border border-white/40">
+                    <span className="text-xs text-slate-600">{totalUnreadCount} 条新消息</span>
                   </div>
-                  
-                  {/* 展开的未读消息列表 */}
-                  {showUnreadPreview && (
-                    <div className="mt-1 bg-white/70 backdrop-blur-sm rounded-xl border border-white/40 overflow-hidden max-h-40 overflow-y-auto scrollbar">
-                      {Object.entries(unreadMessages).map(([chatId, msgs]) => {
-                        const chat = chats.find(c => c.id === chatId);
-                        const role = roles.find(r => r.id === chat?.roleId);
-                        if (!msgs.length) return null;
-                        return (
-                          <div key={chatId} className="px-3 py-2 border-b border-white/30 last:border-b-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <div className="w-5 h-5 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center text-white text-[10px] font-bold overflow-hidden">
-                                {role?.avatar ? (
-                                  <img src={role.avatar} className="w-full h-full object-cover" alt="" />
-                                ) : (
-                                  role?.name?.charAt(0) || '?'
-                                )}
-                              </div>
-                              <span className="text-xs font-medium text-slate-700">{role?.name || '未知'}</span>
-                              <span className="text-[10px] text-slate-400">{msgs.length}条</span>
-                            </div>
-                            <div className="text-xs text-slate-600 line-clamp-2 pl-7">
-                              {msgs[msgs.length - 1]?.content}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
               )}
             </div>
@@ -1378,38 +966,6 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
           ))}
         </div>
         
-        {/* 主动消息气泡 - 浮动层，不占用布局空间 */}
-        {assistantBubbles.length > 0 && homeAssistantRole && (
-          <div className="absolute top-[185px] left-[60px] right-4 z-30 pointer-events-none">
-            <div className="space-y-2">
-              {assistantBubbles.map((bubble) => (
-                <div 
-                  key={bubble.id} 
-                  className="relative group/bubble animate-fade-in pointer-events-auto"
-                >
-                  <div 
-                    className="bg-slate-800/10 backdrop-blur-[2px] rounded-2xl px-3 py-2 text-sm text-slate-700 border border-slate-400/20 cursor-pointer hover:bg-slate-800/15 transition-all inline-block max-w-full"
-                    onClick={() => handleBubbleClick(bubble.id)}
-                  >
-                    {bubble.content}
-                  </div>
-                  {/* 关闭按钮 */}
-                  <button
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-slate-500/50 hover:bg-slate-500/70 text-white flex items-center justify-center opacity-0 group-hover/bubble:opacity-100 transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeBubble(bubble.id);
-                    }}
-                  >
-                    <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
     );
   };
@@ -1621,7 +1177,6 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
           onExportChat={exportChatHistory}
           onImportChat={importChatHistory}
           onDeleteRole={deleteRole}
-          onSetHomeAssistant={setHomeAssistant}
         />
       )}
     </div>
@@ -1783,10 +1338,9 @@ type RolePanelProps = {
   onExportChat: (chatId: string) => void;
   onImportChat: (file: File, chatId: string) => void;
   onDeleteRole: (roleId: string) => void;
-  onSetHomeAssistant: (roleId: string) => void;
 };
 
-const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId, onClose, onSave, onChatSettingsSave, onAvatarUpload, onExportChat, onImportChat, onDeleteRole, onSetHomeAssistant }) => {
+const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId, onClose, onSave, onChatSettingsSave, onAvatarUpload, onExportChat, onImportChat, onDeleteRole }) => {
   const [draft, setDraft] = useState<Role>(role);
   const [chatDraft, setChatDraft] = useState<ChatSettings>(chatSettings);
   const [activeTab, setActiveTab] = useState<'role' | 'chat' | 'history'>('role');
@@ -1922,19 +1476,6 @@ const RolePanel: React.FC<RolePanelProps> = ({ role, chatSettings, currentChatId
           />
         </label>
         
-        {/* 设为首页助手开关 */}
-        <div className="flex items-center justify-between p-3 rounded-xl bg-gradient-to-r from-cyan-50/50 to-blue-50/50 border border-cyan-200/50">
-          <div className="flex-1">
-            <div className="text-sm font-medium text-slate-700">设为首页助手</div>
-            <div className="text-xs text-slate-500 mt-0.5">开启后，该角色将作为首页流体球AI助手</div>
-          </div>
-          <button
-            className={`relative w-12 h-6 rounded-full transition-all ${role.isHomeAssistant ? 'bg-gradient-to-r from-cyan-500 to-blue-500' : 'bg-slate-300'}`}
-            onClick={() => onSetHomeAssistant(role.id)}
-          >
-            <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow-md transition-all ${role.isHomeAssistant ? 'left-6' : 'left-0.5'}`}></div>
-          </button>
-        </div>
           </>
         )}
 

@@ -642,74 +642,118 @@ async def proactive_thinking():
         next_target_interval = random.randint(min_interval, max_interval)
         print(f"✅ 开始执行主动思考，下次间隔{next_target_interval}分钟")
         
-        # 获取最近的记忆
-        memories_result = supabase.table("memories")\
+        # ============ 环境感知数据采集 ============
+        # 获取最近的聊天记录
+        chat_result = supabase.table("memories")\
             .select("content, type, created_at")\
+            .eq("type", "chat")\
             .order("created_at", desc=True)\
-            .limit(10)\
+            .limit(20)\
             .execute()
+        recent_chats = chat_result.data or []
         
-        recent_memories = [m["content"] for m in memories_result.data] if memories_result.data else []
+        # 获取最近的GPS记录
+        gps_result = supabase.table("memories")\
+            .select("content, metadata, created_at")\
+            .eq("type", "gps_history")\
+            .order("created_at", desc=True)\
+            .limit(3)\
+            .execute()
+        recent_gps = gps_result.data or []
         
-        # 计算失联时长（最后一条chat类型记忆的时间）
-        last_chat = None
-        for m in memories_result.data:
-            if m.get("type") == "chat":
-                last_chat = m
-                break
+        # 获取最近的截屏数据（微信、美团等应用活动）
+        screen_result = supabase.table("memories")\
+            .select("content, metadata, created_at")\
+            .eq("type", "screen_capture")\
+            .order("created_at", desc=True)\
+            .limit(5)\
+            .execute()
+        recent_screens = screen_result.data or []
         
+        # 获取系统状态（电量、WiFi等，由快捷指令上传）
+        status_result = supabase.table("memories")\
+            .select("content, metadata, created_at")\
+            .eq("type", "system_status")\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        system_status = status_result.data[0] if status_result.data else None
+        
+        # 计算失联时长
         hours_since_last_chat = 0
-        if last_chat:
-            last_chat_time = datetime.fromisoformat(last_chat["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
+        if recent_chats:
+            last_chat_time = datetime.fromisoformat(recent_chats[0]["created_at"].replace("Z", "+00:00").replace("+00:00", ""))
             hours_since_last_chat = (now - last_chat_time).total_seconds() / 3600
         
-        # 获取管家角色人设
-        butler_role = get_butler_role()
-        if not butler_role:
-            print("⚠️ 未设置管家角色，跳过主动思考")
-            return
-        
-        butler_persona = build_butler_persona(butler_role)
-        
-        # 让AI决定是否发消息（根据聊天记录中用户的偏好来决定）
+        # ============ 构建环境上下文 ============
         beijing_hour = (now.hour + 8) % 24
         weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         
-        system_prompt = f"""{butler_persona}
-
-（以上是你的角色设定，请完全按照设定来说话和行动）
+        # GPS上下文
+        gps_context = ""
+        if recent_gps:
+            latest_gps = recent_gps[0]
+            gps_meta = latest_gps.get("metadata", {})
+            location = gps_meta.get("location", "未知位置")
+            gps_time = latest_gps.get("created_at", "")[:16]
+            gps_context = f"位置：{location}（{gps_time}）"
+        
+        # 系统状态上下文
+        status_context = ""
+        if system_status:
+            meta = system_status.get("metadata", {})
+            battery = meta.get("battery", "未知")
+            wifi = meta.get("wifi", "未知")
+            status_context = f"电量：{battery}% | WiFi：{wifi}"
+        
+        # 截屏活动上下文
+        screen_context = ""
+        if recent_screens:
+            apps = [s.get("metadata", {}).get("app", "未知") for s in recent_screens[:3]]
+            screen_context = f"最近使用的应用：{', '.join(apps)}"
+        
+        # 聊天记录上下文
+        chat_context = "\n".join([c["content"][:100] for c in recent_chats[:10]]) if recent_chats else "（暂无聊天记录）"
+        
+        # ============ AI决策 ============
+        system_prompt = """你是一个智能助手，负责根据用户的环境状态决定是否主动发送关怀消息。
 
 ## 你的任务
-1. 分析聊天记录，识别用户对联系频率的偏好
-2. 根据偏好和当前时间决定是否发消息
+1. 分析用户的环境数据（位置、电量、活动、聊天记录）
+2. 识别是否有需要关心的场景
+3. 决定是否发送消息，以及发送什么内容
 
-## 识别用户偏好的例子
-- "晚上10点后催我睡觉" → 10点后要频繁发消息
-- "我有事，暂时别找我" → 暂时不发消息
-- "上班时间不要打扰" → 9-18点不发消息
-- "周末多陪我聊天" → 周末增加频率"""
+## 需要主动关心的场景示例
+- 深夜还在外面（GPS显示不在家）
+- 电量很低（<20%）
+- 长时间没有聊天（>3小时）
+- 深夜还在使用手机（>23点）
+- 检测到用户可能在加班（晚上还在公司位置）
 
-        user_prompt = f"""【当前状态】
-时间：{weekday} {beijing_hour}点
+## 不需要打扰的场景
+- 正常工作时间
+- 用户刚刚聊过天
+- 凌晨3-7点（睡眠时间）
+
+## 回复格式
+- 如果不需要发消息：回复 "PASS"
+- 如果需要发消息：回复 "MESSAGE: 你想说的话"
+
+消息要简短、自然、温暖，像朋友一样关心用户。"""
+
+        user_prompt = f"""【当前时间】{weekday} {beijing_hour}点
+
+【环境状态】
+{gps_context if gps_context else "位置：未知"}
+{status_context if status_context else "系统状态：未知"}
+{screen_context if screen_context else "应用活动：未知"}
 用户失联：{hours_since_last_chat:.1f}小时
 
-【最近的聊天记录】
-{chr(10).join(recent_memories[:10]) if recent_memories else "（暂无）"}
+【最近聊天记录】
+{chat_context}
 
 ---
-请分析并回复（严格按格式）：
-
-1. 如果发现用户有频率偏好要求，先输出：
-FREQ: min_interval=X, max_interval=Y, no_disturb_start=H1, no_disturb_end=H2
-（X/Y是分钟数，H1/H2是小时数，没有的项可以省略）
-
-2. 然后决定是否发消息：
-- "PASS" 不发消息
-- "MESSAGE: 你想说的话" 发消息
-
-示例回复：
-FREQ: min_interval=5, max_interval=10
-MESSAGE: 都10点半了，该睡觉啦！"""
+请分析环境状态，决定是否需要主动发消息关心用户。"""
 
         decision = await call_ai(system_prompt, user_prompt)
         decision = decision.strip()
