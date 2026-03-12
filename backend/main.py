@@ -75,6 +75,7 @@ class MemoryCreate(BaseModel):
 
 class SyncData(BaseModel):
     chats: Optional[List[dict]] = None
+    messages: Optional[dict] = None  # {chatId: Message[]}
     roles: Optional[List[dict]] = None
     api_settings: Optional[dict] = None
     chat_settings: Optional[dict] = None
@@ -1088,13 +1089,14 @@ async def generate_proactive(req: ProactiveRequest):
 async def sync_load():
     r = supabase.table("user_sync").select("*").eq("user_id", "default_user").limit(1).execute()
     if r.data:
-        return {"found": True, "data": {k: r.data[0].get(k) for k in ["chats", "roles", "api_settings", "chat_settings", "user_profile"]}}
+        return {"found": True, "data": {k: r.data[0].get(k) for k in ["chats", "messages", "roles", "api_settings", "chat_settings", "user_profile", "updated_at"]}}
     return {"found": False}
 
 @app.post("/sync/save")
 async def sync_save(d: SyncData):
     data = {"user_id": "default_user", "updated_at": datetime.utcnow().isoformat()}
     if d.chats is not None: data["chats"] = d.chats
+    if d.messages is not None: data["messages"] = d.messages
     if d.roles is not None: data["roles"] = d.roles
     if d.api_settings is not None: data["api_settings"] = d.api_settings
     if d.chat_settings is not None: data["chat_settings"] = d.chat_settings
