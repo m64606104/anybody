@@ -923,6 +923,29 @@ async def get_chat_messages(chat_id: str, limit: int = 50):
     r = supabase.table("chat_messages").select("*").eq("chat_id", chat_id).order("created_at", desc=False).limit(limit).execute()
     return {"messages": r.data or []}
 
+@app.get("/chat/all-messages")
+async def get_all_chat_messages():
+    """获取所有聊天的消息，按chat_id分组返回"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    # 获取最近1000条消息
+    r = supabase.table("chat_messages").select("*").order("created_at", desc=False).limit(1000).execute()
+    messages = r.data or []
+    # 按chat_id分组
+    grouped: dict = {}
+    for msg in messages:
+        chat_id = msg.get("chat_id", "unknown")
+        if chat_id not in grouped:
+            grouped[chat_id] = []
+        # 转换为前端Message格式
+        grouped[chat_id].append({
+            "id": msg.get("id", str(msg.get("created_at", ""))),
+            "role": "assistant" if msg.get("sender") == "assistant" else "user",
+            "content": msg.get("content", ""),
+            "createdAt": int(datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00").replace("+00:00", "")).timestamp() * 1000) if msg.get("created_at") else 0
+        })
+    return {"messages": grouped}
+
 @app.post("/chat/delete")
 async def delete_chat_messages(data: dict):
     """删除聊天消息"""

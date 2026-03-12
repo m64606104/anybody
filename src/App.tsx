@@ -25,7 +25,8 @@ import {
   syncMessage,
   sendChatMessage,
   deleteChatMessages,
-  importChatMessages
+  importChatMessages,
+  loadAllChatMessages
 } from './services/api';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
@@ -178,22 +179,30 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadFromCloud = async () => {
       try {
+        // 1. 加载设置数据
         const result = await loadSyncData();
         if (result.found && result.data) {
-          console.log('☁️ 从云端加载数据:', result.data.updated_at);
-          // 只有云端数据比本地新才覆盖
+          console.log('☁️ 从云端加载设置:', result.data.updated_at);
           if (result.data.chats?.length) setChats(result.data.chats);
-          if (result.data.messages && Object.keys(result.data.messages).length) setMessagesMap(result.data.messages);
           if (result.data.roles?.length) setRoles(result.data.roles);
           if (result.data.api_settings?.apiKey) setApiSettings(result.data.api_settings);
           if (result.data.chat_settings?.bufferMs) setChatSettings(result.data.chat_settings);
           if (result.data.user_profile?.nickname) setUserProfile(result.data.user_profile);
           setLastSyncTime(result.data.updated_at || null);
-          setCloudSyncStatus('synced');
-        } else {
-          console.log('☁️ 云端无数据，使用本地数据');
-          setCloudSyncStatus('synced');
         }
+        
+        // 2. 从chat_messages表加载消息（这是消息的真正来源）
+        try {
+          const msgResult = await loadAllChatMessages();
+          if (msgResult.messages && Object.keys(msgResult.messages).length > 0) {
+            console.log('☁️ 从chat_messages表加载消息:', Object.keys(msgResult.messages).length, '个聊天');
+            setMessagesMap(prev => ({...prev, ...msgResult.messages}));
+          }
+        } catch (msgErr) {
+          console.warn('☁️ 加载消息失败:', msgErr);
+        }
+        
+        setCloudSyncStatus('synced');
       } catch (e) {
         console.warn('☁️ 云端加载失败，使用本地数据:', e);
         setCloudSyncStatus('offline');
@@ -202,7 +211,7 @@ const App: React.FC = () => {
     loadFromCloud();
   }, []);
 
-  // 数据变化时自动保存到云端（防抖）
+  // 数据变化时自动保存到云端（防抖）- 不保存messages，消息已在chat_messages表
   const saveToCloud = useCallback(() => {
     if (syncTimeoutRef.current) {
       window.clearTimeout(syncTimeoutRef.current);
@@ -211,7 +220,6 @@ const App: React.FC = () => {
       try {
         await saveSyncData({
           chats,
-          messages: messagesMap,
           roles,
           api_settings: apiSettings,
           chat_settings: chatSettings,
@@ -219,20 +227,20 @@ const App: React.FC = () => {
         });
         setLastSyncTime(new Date().toISOString());
         setCloudSyncStatus('synced');
-        console.log('☁️ 已同步到云端');
+        console.log('☁️ 已同步设置到云端');
       } catch (e) {
         console.warn('☁️ 同步失败:', e);
         setCloudSyncStatus('error');
       }
     }, 2000); // 2秒防抖
-  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
+  }, [chats, roles, apiSettings, chatSettings, userProfile]);
 
-  // 监听数据变化，触发同步
+  // 监听数据变化，触发同步（不监听messagesMap，消息通过后端API存储）
   useEffect(() => {
     if (cloudSyncStatus !== 'loading') {
       saveToCloud();
     }
-  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
+  }, [chats, roles, apiSettings, chatSettings, userProfile]);
 
   // 每个聊天独立的缓冲区和计时器
   const chatBuffers = useRef<Record<string, string[]>>({});

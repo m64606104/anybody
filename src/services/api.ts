@@ -526,6 +526,17 @@ export async function syncMessage(chatId: string, message: any): Promise<{
   return resp.json();
 }
 
+/**
+ * 从chat_messages表加载所有消息（按chat_id分组）
+ */
+export async function loadAllChatMessages(): Promise<{
+  messages: Record<string, any[]>;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/chat/all-messages`);
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
 // ============ 后端聊天 ============
 
 /**
