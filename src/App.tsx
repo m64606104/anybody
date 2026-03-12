@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { User } from '@supabase/supabase-js';
 import { 
   storeMemory, 
   createReminder, 
@@ -19,27 +18,12 @@ import {
   getUserStatus,
   searchMemory,
   parseQueryFromText,
-  createScheduleActive,
-  parseScheduleActiveFromText,
-  removeScheduleActiveFromText,
-  parseSetActiveFromText,
-  removeSetActiveFromText,
   deleteMemoryByContent,
   removeQueryFromText,
   loadSyncData,
   saveSyncData,
   syncMessage
 } from './services/api';
-import { 
-  initAuth, 
-  onAuthStateChange, 
-  signIn, 
-  signUp, 
-  signOut, 
-  getCurrentUserId,
-  getUserConfig,
-  saveUserConfig
-} from './services/auth';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
 
@@ -54,7 +38,6 @@ type Role = {
   examples?: string;
   memory?: string;
   isHomeAssistant?: boolean; // 是否作为首页AI助手
-  hasActivePermission?: boolean; // 是否拥有主动联系权限（用户授权）
 };
 
 type Chat = {
@@ -94,7 +77,6 @@ type ChatSettings = {
 type UserProfile = {
   nickname: string;
   signature?: string;
-  avatar?: string;
 };
 
 const useLocalState = <T,>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] => {
@@ -143,15 +125,6 @@ const defaultHomeApps: HomeApp[] = [
 ];
 
 const App: React.FC = () => {
-  // ============ 认证状态 ============
-  const [authUser, setAuthUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authSubmitting, setAuthSubmitting] = useState(false);
-
   const [screen, setScreen] = useState<Screen>('home');
   const [selectedChatId, setSelectedChatId] = useState<string>(defaultChat.id);
 
@@ -172,7 +145,6 @@ const App: React.FC = () => {
     nickname: '',
     signature: '',
   });
-  const [barkUrl, setBarkUrl] = useLocalState<string>('anyone.barkUrl', '');
 
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelTestStatus, setModelTestStatus] = useState<string>('');
@@ -184,7 +156,6 @@ const App: React.FC = () => {
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [showAssistantChat, setShowAssistantChat] = useState(false); // 流体球小聊天窗口
   const [assistantInput, setAssistantInput] = useState(''); // 助手聊天输入
-  const [isTyping, setIsTyping] = useState(false); // AI正在输入中
   const [assistantBubbles, setAssistantBubbles] = useState<{id: string; content: string; createdAt: number}[]>([]); // 主动消息气泡
   const [unreadMessages, setUnreadMessages] = useState<Record<string, Message[]>>({}); // 未读消息 {chatId: messages[]}
   const [showUnreadPreview, setShowUnreadPreview] = useState(false); // 是否展开未读消息预览
@@ -193,139 +164,18 @@ const App: React.FC = () => {
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const syncTimeoutRef = useRef<number | null>(null);
 
-  // ============ 认证初始化 ============
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const user = await initAuth();
-        setAuthUser(user);
-        // 如果已登录，加载用户配置
-        if (user) {
-          const config = await getUserConfig();
-          if (config) {
-            if (config.openai_api_key) {
-              setApiSettings(prev => ({
-                ...prev,
-                apiKey: config.openai_api_key || '',
-                baseUrl: config.openai_base_url || prev.baseUrl,
-                model: config.openai_model || prev.model,
-              }));
-            }
-            if (config.bark_url) setBarkUrl(config.bark_url);
-          }
-        }
-      } catch (e) {
-        console.warn('认证初始化失败:', e);
-      } finally {
-        setAuthLoading(false);
-      }
-    };
-    init();
-
-    // 监听认证状态变化
-    const { data: { subscription } } = onAuthStateChange((user) => {
-      setAuthUser(user);
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  // 登录/注册处理
-  const handleAuth = async () => {
-    setAuthError('');
-    setAuthSubmitting(true);
-    try {
-      if (authMode === 'login') {
-        const { user, error } = await signIn(authEmail, authPassword);
-        if (error) {
-          setAuthError(error.message);
-        } else if (user) {
-          setAuthUser(user);
-          // 加载用户配置
-          const config = await getUserConfig();
-          if (config) {
-            if (config.openai_api_key) {
-              setApiSettings(prev => ({
-                ...prev,
-                apiKey: config.openai_api_key || '',
-                baseUrl: config.openai_base_url || prev.baseUrl,
-                model: config.openai_model || prev.model,
-              }));
-            }
-            if (config.bark_url) setBarkUrl(config.bark_url);
-          }
-        }
-      } else {
-        const { user, error } = await signUp(authEmail, authPassword);
-        if (error) {
-          setAuthError(error.message);
-        } else if (user) {
-          setAuthError('注册成功！请检查邮箱确认后登录。');
-          setAuthMode('login');
-        }
-      }
-    } catch (e: any) {
-      setAuthError(e.message || '操作失败');
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  // 登出处理
-  const handleSignOut = async () => {
-    await signOut();
-    setAuthUser(null);
-    // 清空本地数据
-    setRoles([defaultRole]);
-    setChats([defaultChat]);
-    setMessagesMap({});
-    setApiSettings({ apiKey: '', baseUrl: 'https://api.openai.com', model: '' });
-    setBarkUrl('');
-  };
-
   // ============ 云端同步逻辑 ============
   // 启动时从云端加载数据
   useEffect(() => {
-    if (!authUser) return; // 未登录不同步
     const loadFromCloud = async () => {
       try {
-        const result = await loadSyncData(authUser.id);
+        const result = await loadSyncData();
         if (result.found && result.data) {
-          console.log('☁️ 从云端加载数据:', result.data.updated_at, '用户:', authUser.id);
-          // 合并云端数据和本地数据（避免覆盖本地新建的角色/聊天）
-          const cloudData = result.data;
-          if (cloudData.roles?.length) {
-            setRoles((localRoles) => {
-              const localRoleMap = new Map(localRoles.map(r => [r.id, r]));
-              const cloudRoleIds = new Set(cloudData.roles!.map((r: Role) => r.id));
-              const localOnlyRoles = localRoles.filter(r => !cloudRoleIds.has(r.id));
-              // 合并云端角色（保留本地角色的最新状态如isHomeAssistant）
-              const mergedCloudRoles = cloudData.roles!.map((cloudRole: Role) => {
-                const localRole = localRoleMap.get(cloudRole.id);
-                if (localRole) {
-                  // 如果本地有这个角色，保留本地的isHomeAssistant等状态
-                  return { ...cloudRole, isHomeAssistant: localRole.isHomeAssistant };
-                }
-                return cloudRole;
-              });
-              return [...mergedCloudRoles, ...localOnlyRoles];
-            });
-          }
-          if (cloudData.chats?.length) {
-            setChats((localChats) => {
-              const cloudChatIds = new Set(cloudData.chats!.map((c: Chat) => c.id));
-              const localOnlyChats = localChats.filter(c => !cloudChatIds.has(c.id));
-              return [...cloudData.chats!, ...localOnlyChats];
-            });
-          }
-          if (cloudData.messages && Object.keys(cloudData.messages).length) {
-            setMessagesMap((localMessages) => ({
-              ...localMessages,
-              ...cloudData.messages
-            }));
-          }
+          console.log('☁️ 从云端加载数据:', result.data.updated_at);
+          // 只有云端数据比本地新才覆盖
+          if (result.data.chats?.length) setChats(result.data.chats);
+          if (result.data.messages && Object.keys(result.data.messages).length) setMessagesMap(result.data.messages);
+          if (result.data.roles?.length) setRoles(result.data.roles);
           if (result.data.api_settings?.apiKey) setApiSettings(result.data.api_settings);
           if (result.data.chat_settings?.bufferMs) setChatSettings(result.data.chat_settings);
           if (result.data.user_profile?.nickname) setUserProfile(result.data.user_profile);
@@ -341,11 +191,10 @@ const App: React.FC = () => {
       }
     };
     loadFromCloud();
-  }, [authUser]);
+  }, []);
 
   // 数据变化时自动保存到云端（防抖）
   const saveToCloud = useCallback(() => {
-    if (!authUser) return; // 未登录不同步
     if (syncTimeoutRef.current) {
       window.clearTimeout(syncTimeoutRef.current);
     }
@@ -358,16 +207,16 @@ const App: React.FC = () => {
           api_settings: apiSettings,
           chat_settings: chatSettings,
           user_profile: userProfile,
-        }, authUser.id);
+        });
         setLastSyncTime(new Date().toISOString());
         setCloudSyncStatus('synced');
-        console.log('☁️ 已同步到云端，用户:', authUser.id);
+        console.log('☁️ 已同步到云端');
       } catch (e) {
         console.warn('☁️ 同步失败:', e);
         setCloudSyncStatus('error');
       }
     }, 2000); // 2秒防抖
-  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile, authUser]);
+  }, [chats, messagesMap, roles, apiSettings, chatSettings, userProfile]);
 
   // 监听数据变化，触发同步
   useEffect(() => {
@@ -379,7 +228,6 @@ const App: React.FC = () => {
   // 每个聊天独立的缓冲区和计时器
   const chatBuffers = useRef<Record<string, string[]>>({});
   const chatTimers = useRef<Record<string, number>>({});
-  const timerWorkerRef = useRef<Worker | null>(null);
   const dragId = useRef<string | null>(null);
   const floatingDragId = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -465,24 +313,6 @@ const App: React.FC = () => {
     setMessagesMap((prev) => ({ ...prev, [chatId]: updater(prev[chatId] ?? []) }));
   };
 
-  // 初始化Web Worker（用于后台计时器，防止页面进入后台时被暂停）
-  useEffect(() => {
-    try {
-      timerWorkerRef.current = new Worker('/timer-worker.js');
-      timerWorkerRef.current.onmessage = (e) => {
-        if (e.data.action === 'flush') {
-          flushBufferForChat(e.data.chatId);
-        }
-      };
-      console.log('✅ Timer Worker 初始化成功');
-    } catch (err) {
-      console.warn('⚠️ Timer Worker 初始化失败，使用普通setTimeout:', err);
-    }
-    return () => {
-      timerWorkerRef.current?.terminate();
-    };
-  }, []);
-
   const pushAssistantChunk = (chatId: string, content: string) => {
     const message: Message = { id: uuid(), role: 'assistant', content, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, message]);
@@ -509,7 +339,6 @@ const App: React.FC = () => {
     console.log('  历史记录数量:', history.length);
     console.log('  历史记录:', history.map(m => ({ role: m.role, content: m.content.slice(0, 50) + '...' })));
     
-    setIsTyping(true);
     void callModelForChat(chatId, history);
   };
 
@@ -517,7 +346,6 @@ const App: React.FC = () => {
   const callModelForChat = async (chatId: string, history: Message[]) => {
     if (!apiSettings.apiKey || !apiSettings.model || !apiSettings.baseUrl) {
       pushAssistantChunkWithUnread(chatId, '请先在设置页配置 Base URL、API Key 和模型');
-      setIsTyping(false);
       return;
     }
 
@@ -532,31 +360,26 @@ const App: React.FC = () => {
     
     try {
       // 按类型分别获取记忆（避免互相挤掉）
-      // 聊天记录用本地的（更完整），截屏和GPS从Supabase获取
-      const memoriesResult = await getMemoriesByTypes(20, 50, 10, authUser?.id);
+      // 聊天100条、截屏50条、GPS10条
+      const memoriesResult = await getMemoriesByTypes(100, 50, 10);
       
-      // 截屏数据（微信、美团、小红书、咸鱼等）- 这是关键数据，从Supabase获取
+      // 聊天记录
+      if (memoriesResult.chats?.length) {
+        const chatList = memoriesResult.chats
+          .map(m => `- ${m.content.slice(0, 150)}`)
+          .join('\n');
+        memoryContext = `\n## 最近的聊天记录（来自记忆库，共${memoriesResult.chats.length}条）\n${chatList}`;
+      }
+      
+      // 截屏数据（微信、美团、小红书、咸鱼等）
       if (memoriesResult.screen_captures?.length) {
         const captureList = memoriesResult.screen_captures
           .map(m => {
             const app = m.metadata?.app || '未知应用';
-            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
-            return `- [${app} ${time}] ${m.content.slice(0, 500)}`;
+            return `- [${app}] ${m.content.slice(0, 500)}`;
           })
           .join('\n');
-        screenCaptureContext = `\n## 用户最近的应用截屏内容（你可以看到用户在微信、美团、小红书、咸鱼等应用的活动，如课表、聊天、订单等）\n${captureList}`;
-      }
-      
-      // GPS数据
-      if (memoriesResult.gps?.length) {
-        const gpsList = memoriesResult.gps
-          .map(m => {
-            const addr = m.metadata?.address || '未知位置';
-            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
-            return `- [${time}] ${addr}`;
-          })
-          .join('\n');
-        memoryContext += `\n## 用户最近的位置记录\n${gpsList}`;
+        screenCaptureContext = `\n## 用户最近的应用截屏内容（共${memoriesResult.screen_captures.length}条，包含微信、美团等应用的活动）\n${captureList}`;
       }
       
       // 获取用户状态（位置、电量等）
@@ -574,39 +397,24 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
-    // 获取精准时间信息
-    const now = new Date();
-    const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-    const timeInfo = `当前时间：${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${weekdays[now.getDay()]} ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
-
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
-
-## 当前时间
-${timeInfo}
 
 ## 你的能力
 1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆
-2. **闹钟提醒**：帮用户设置固定时间的提醒（到点响铃，内容固定）
-3. **预约主动联系**：你可以预约在未来某个时间主动找用户聊天（内容动态生成）
-4. **日历事件**：你可以帮用户创建日程安排
-5. **记账**：你可以帮用户记录支出
-6. **联网搜索**：你可以搜索网络获取最新信息
-7. **查询记忆**：你可以搜索用户的历史记忆
+2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
+3. **日历事件**：你可以帮用户创建日程安排
+4. **记账**：你可以帮用户记录支出
+5. **联网搜索**：你可以搜索网络获取最新信息
+6. **查询记忆**：你可以搜索用户的历史记忆
+7. **主动消息**：当用户充电时，系统会自动触发你主动发消息
 8. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
 
 ## 特殊指令格式（在回复中使用，系统会自动执行）
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]（用于"提醒我做某事"、"定个闹钟"等固定提醒）
-- 预约主动联系：[SCHEDULE_ACTIVE:2026-03-12T08:00:00|话题|上下文]（用于"明天来问问我"、"找我聊聊"等主动关怀）
-- 获取主动权：[SET_ACTIVE:true]（当用户说"你要多找我"、"你要主动联系我"时使用，获得主动发消息的权限）
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
 - 记账：[EXPENSE:50|food|午餐]
 - 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
-
-## 闹钟 vs 主动联系的区别（重要）
-- **闹钟[REMINDER]**：用户明确说"提醒我"、"定个闹钟"、"别忘了"时使用。到点响铃，内容固定。
-- **主动联系[SCHEDULE_ACTIVE]**：用户说"你明天来问问我进度"、"你找我聊聊天"时使用。预约未来某个时间主动找用户聊天。
-- **获取主动权[SET_ACTIVE:true]**：用户说"你要多找我"、"你要主动联系我"时使用。获得主动权后，系统会随机让你主动发消息给用户。
 ${memoryContext}
 ${screenCaptureContext}
 ${userStatusContext}
@@ -682,16 +490,12 @@ ${rolePrompt || '（无特定角色设定）'}
       console.log('  解析后segments:', segments);
 
       let delay = 200;
-      const totalDelay = delay + segments.length * chatSettings.chunkIntervalMs;
       segments.forEach((chunk) => {
         window.setTimeout(() => pushAssistantChunkWithUnread(chatId, chunk), delay);
         delay += chatSettings.chunkIntervalMs;
       });
-      // 所有消息发送完后关闭输入动画
-      window.setTimeout(() => setIsTyping(false), totalDelay);
     } catch (e: any) {
       pushAssistantChunkWithUnread(chatId, `调用异常：${e?.message || e}`);
-      setIsTyping(false);
     }
   };
 
@@ -764,52 +568,34 @@ ${rolePrompt || '（无特定角色设定）'}
         .catch(e => console.warn('❌ 日历事件创建失败:', e));
     }
     
-    // 解析QUERY指令并搜索记忆（只在控制台打印，不单独显示消息）
+    // 解析QUERY指令并搜索记忆
     const queryKeyword = parseQueryFromText(content);
     if (queryKeyword) {
       console.log('🧠 检测到QUERY指令:', queryKeyword);
       try {
-        const queryResult = await searchMemory(queryKeyword, 10, undefined, authUser?.id);
+        const queryResult = await searchMemory(queryKeyword, 5);
         if (queryResult.memories?.length) {
-          console.log('🧠 搜索结果:', queryResult.memories.map(m => m.content.slice(0, 50)));
+          const memorySummary = queryResult.memories
+            .map((m, i) => `${i + 1}. [${m.type}] ${m.content.slice(0, 100)}`)
+            .join('\n');
+          const queryMessage: Message = { 
+            id: uuid(), 
+            role: 'assistant', 
+            content: `🧠 记忆搜索结果:\n${memorySummary}`, 
+            createdAt: Date.now() 
+          };
+          updateMessages(chatId, (prev) => [...prev, queryMessage]);
         } else {
-          console.log('🧠 没有找到相关记忆');
+          const noResultMessage: Message = { 
+            id: uuid(), 
+            role: 'assistant', 
+            content: `🧠 没有找到与"${queryKeyword}"相关的记忆`, 
+            createdAt: Date.now() 
+          };
+          updateMessages(chatId, (prev) => [...prev, noResultMessage]);
         }
       } catch (e) {
         console.warn('❌ 记忆搜索失败:', e);
-      }
-    }
-    
-    // 解析SCHEDULE_ACTIVE指令（预约主动联系，区别于闹钟）
-    const scheduleActive = parseScheduleActiveFromText(content);
-    if (scheduleActive) {
-      console.log('📅 检测到SCHEDULE_ACTIVE指令:', scheduleActive);
-      createScheduleActive(scheduleActive.time, scheduleActive.topic, scheduleActive.context)
-        .then((res) => {
-          if (res.skipped) {
-            console.log('⏭️ 跳过重复预约');
-          } else {
-            console.log('✅ 预约主动联系创建成功');
-          }
-        })
-        .catch(e => console.warn('❌ 预约主动联系创建失败:', e));
-    }
-    
-    // 解析SET_ACTIVE指令（授权当前角色主动联系权限）
-    const setActiveValue = parseSetActiveFromText(content);
-    if (setActiveValue !== null) {
-      const chat = chats.find((c) => c.id === chatId);
-      if (chat?.roleId) {
-        console.log(`🔑 ${setActiveValue ? '授权' : '取消'}角色主动联系权限:`, chat.roleId);
-        // 检查当前有多少角色拥有主动权（最多2个）
-        const currentActiveCount = roles.filter(r => r.hasActivePermission).length;
-        if (setActiveValue && currentActiveCount >= 2) {
-          console.log('⚠️ 主动权名额已满（最多2个），需要先取消其他角色的主动权');
-        } else {
-          setRoles((prev) => prev.map((r) => 
-            r.id === chat.roleId ? { ...r, hasActivePermission: setActiveValue } : r
-          ));
-        }
       }
     }
     
@@ -819,22 +605,20 @@ ${rolePrompt || '（无特定角色设定）'}
     cleanContent = removeSearchFromText(cleanContent);
     cleanContent = removeEventFromText(cleanContent);
     cleanContent = removeQueryFromText(cleanContent);
-    cleanContent = removeScheduleActiveFromText(cleanContent);
-    cleanContent = removeSetActiveFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, message]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: cleanContent } : c)));
     
-    // 存储AI回复到记忆（异步，不阻塞，按user_id隔离）
+    // 存储AI回复到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
     storeMemory(cleanContent, 'chat', { 
       chatId, 
       role: 'assistant',
       roleName: role?.name || '未知角色'
-    }, false, authUser?.id).catch(e => console.warn('存储记忆失败:', e));
+    }).catch(e => console.warn('存储记忆失败:', e));
     
     // 如果用户不在该聊天页，加入未读消息
     if (selectedChatId !== chatId || screen !== 'chat') {
@@ -866,14 +650,14 @@ ${rolePrompt || '（无特定角色设定）'}
     console.log('  用户消息:', userMsg);
     console.log('  当前缓冲区:', chatBuffers.current[chatId] || []);
     
-    // 存储用户消息到记忆（异步，不阻塞，按user_id隔离）
+    // 存储用户消息到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
     storeMemory(userMsg, 'chat', { 
       chatId, 
       role: 'user',
       roleName: role?.name || '未知角色'
-    }, false, authUser?.id).catch(e => console.warn('存储记忆失败:', e));
+    }).catch(e => console.warn('存储记忆失败:', e));
     
     // 立即显示用户消息
     const newMessage: Message = { id: uuid(), role: 'user', content: userMsg, createdAt: Date.now() };
@@ -888,16 +672,11 @@ ${rolePrompt || '（无特定角色设定）'}
     
     console.log('  更新后缓冲区:', chatBuffers.current[chatId]);
     
-    // 重置或启动该聊天的计时器
-    // 优先使用Web Worker（后台不会被暂停），fallback到普通setTimeout
-    if (timerWorkerRef.current) {
-      timerWorkerRef.current.postMessage({ action: 'start', chatId, delay: chatSettings.bufferMs });
-    } else {
-      if (chatTimers.current[chatId]) {
-        window.clearTimeout(chatTimers.current[chatId]);
-      }
-      chatTimers.current[chatId] = window.setTimeout(() => flushBufferForChat(chatId), chatSettings.bufferMs);
+    // 重置或启动该聊天的计时器（独立运行，不受页面切换影响）
+    if (chatTimers.current[chatId]) {
+      window.clearTimeout(chatTimers.current[chatId]);
     }
+    chatTimers.current[chatId] = window.setTimeout(() => flushBufferForChat(chatId), chatSettings.bufferMs);
   };
 
   const handleSend = () => {
@@ -1180,19 +959,8 @@ ${rolePrompt || '（无特定角色设定）'}
   };
 
   // 生成主动消息（切换到主页时触发）
-  // 优先选择拥有主动权的角色，否则使用首页助手角色
   const generateProactiveMessage = async () => {
-    if (!apiSettings.apiKey || !apiSettings.model) return;
-    
-    // 获取所有拥有主动权的角色
-    const activeRoles = roles.filter(r => r.hasActivePermission);
-    // 如果没有拥有主动权的角色，使用首页助手角色
-    const candidateRoles = activeRoles.length > 0 ? activeRoles : (homeAssistantRole ? [homeAssistantRole] : []);
-    if (candidateRoles.length === 0) return;
-    
-    // 随机选择一个角色发消息
-    const selectedRole = candidateRoles[Math.floor(Math.random() * candidateRoles.length)];
-    console.log('🎯 选中角色发送主动消息:', selectedRole.name, selectedRole.hasActivePermission ? '(有主动权)' : '(首页助手)');
+    if (!homeAssistantRole || !apiSettings.apiKey || !apiSettings.model) return;
     
     const hour = new Date().getHours();
     let timeContext = '';
@@ -1205,13 +973,13 @@ ${rolePrompt || '（无特定角色设定）'}
     else timeContext = '现在是深夜，用户可能该休息了';
 
     // 获取最近的聊天记录作为上下文
-    const chat = chats.find((c) => c.roleId === selectedRole.id);
+    const chat = chats.find((c) => c.roleId === homeAssistantRole.id);
     const recentMessages = chat ? (messagesMap[chat.id] || []).slice(-5) : [];
     const chatContext = recentMessages.length > 0 
       ? `最近的对话记录：\n${recentMessages.map(m => `${m.role === 'user' ? '用户' : '你'}：${m.content}`).join('\n')}`
       : '这是第一次打招呼，还没有对话记录';
 
-    const rolePrompt = buildRolePrompt(selectedRole);
+    const rolePrompt = buildRolePrompt(homeAssistantRole);
     
     const systemPrompt = `你是用户的AI助手，以下是你的角色设定：
 ${rolePrompt}
@@ -1242,19 +1010,19 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         const data = await resp.json();
         const content = data?.choices?.[0]?.message?.content?.trim();
         if (content) {
-          // 添加到气泡显示（带上角色名）
-          setAssistantBubbles((prev) => [...prev, { id: uuid(), content: `[${selectedRole.name}] ${content}`, createdAt: Date.now() }]);
+          // 添加到气泡显示
+          setAssistantBubbles((prev) => [...prev, { id: uuid(), content, createdAt: Date.now() }]);
           
           // 同时记录到聊天记录中
-          let roleChat = chats.find((c) => c.roleId === selectedRole.id);
-          if (!roleChat) {
+          let chat = chats.find((c) => c.roleId === homeAssistantRole.id);
+          if (!chat) {
             // 如果没有对应聊天，创建一个
-            roleChat = { id: uuid(), title: selectedRole.name, roleId: selectedRole.id };
-            setChats((prev) => [roleChat!, ...prev]);
-            setMessagesMap((prev) => ({ ...prev, [roleChat!.id]: [] }));
+            chat = { id: uuid(), title: homeAssistantRole.name, roleId: homeAssistantRole.id };
+            setChats((prev) => [chat!, ...prev]);
+            setMessagesMap((prev) => ({ ...prev, [chat!.id]: [] }));
           }
           // 使用pushAssistantChunkWithUnread记录消息（会自动处理未读状态）
-          pushAssistantChunkWithUnread(roleChat.id, content);
+          pushAssistantChunkWithUnread(chat.id, content);
         }
       }
     } catch (e) {
@@ -1427,23 +1195,14 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             {/* 聊天窗口头部 */}
             <div className="flex items-center justify-between p-3 border-b border-white/20 bg-white/20">
               <div className="flex items-center gap-2">
-                {/* 三角形图标（与主页流体球一致） */}
-                <div className="w-8 h-8 flex items-center justify-center">
-                  <svg viewBox="0 0 100 100" className="w-6 h-6">
-                    <polygon 
-                      points="50,15 85,75 15,75" 
-                      fill="none" 
-                      stroke="url(#triangleGradientSmall)" 
-                      strokeWidth="3"
-                      strokeLinejoin="round"
-                    />
-                    <defs>
-                      <linearGradient id="triangleGradientSmall" x1="0%" y1="0%" x2="100%" y2="100%">
-                        <stop offset="0%" stopColor="#06b6d4" />
-                        <stop offset="100%" stopColor="#3b82f6" />
-                      </linearGradient>
-                    </defs>
-                  </svg>
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 overflow-hidden">
+                  {homeAssistantRole.avatar ? (
+                    <img src={homeAssistantRole.avatar} className="w-full h-full object-cover" alt="" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-white text-sm font-bold">
+                      {homeAssistantRole.name.charAt(0)}
+                    </div>
+                  )}
                 </div>
                 <span className="text-sm font-medium text-slate-700">{homeAssistantRole.name}</span>
               </div>
@@ -1753,17 +1512,7 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
       <div className="flex items-center justify-between mb-3">
         <div>
           <div className="text-xs text-slate-600">私聊</div>
-          <div className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-            {currentChat?.title}
-            {isTyping && (
-              <span className="flex items-center gap-1 text-xs text-slate-500 font-normal">
-                <span className="animate-pulse">●</span>
-                <span className="animate-pulse" style={{ animationDelay: '0.2s' }}>●</span>
-                <span className="animate-pulse" style={{ animationDelay: '0.4s' }}>●</span>
-                <span className="ml-1">正在输入</span>
-              </span>
-            )}
-          </div>
+          <div className="text-lg font-semibold text-slate-800">{currentChat?.title}</div>
         </div>
         <div className="flex gap-2">
           {deleteMode ? (
@@ -1788,65 +1537,28 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto scrollbar space-y-3 pb-4 min-h-0">
-        {currentMessages.map((m, idx) => {
-          // 格式化时间显示
-          const msgDate = new Date(m.createdAt);
-          const now = new Date();
-          const isCurrentYear = msgDate.getFullYear() === now.getFullYear();
-          const isToday = msgDate.toDateString() === now.toDateString();
-          const isYesterday = msgDate.toDateString() === new Date(now.getTime() - 86400000).toDateString();
-          
-          let timeStr = '';
-          if (isToday) {
-            timeStr = msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-          } else if (isYesterday) {
-            timeStr = `昨天 ${msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
-          } else if (isCurrentYear) {
-            timeStr = msgDate.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-          } else {
-            timeStr = msgDate.toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' }) + ' ' + msgDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-          }
-          
-          // 判断是否需要显示时间分隔（与上一条消息间隔超过5分钟）
-          const prevMsg = currentMessages[idx - 1];
-          const showTimeSeparator = !prevMsg || (m.createdAt - prevMsg.createdAt > 5 * 60 * 1000);
-          
-          return (
-            <React.Fragment key={m.id}>
-              {showTimeSeparator && (
-                <div className="text-center text-xs text-slate-400 py-1">{timeStr}</div>
-              )}
-              <div className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-start gap-2`}>
-                {deleteMode && (
-                  <input
-                    type="checkbox"
-                    checked={selectedMessages.has(m.id)}
-                    onChange={() => toggleMessageSelection(m.id)}
-                    className="w-4 h-4 cursor-pointer mt-2"
-                  />
-                )}
-                {/* AI角色头像（左侧） */}
-                {m.role === 'assistant' && currentRole?.avatar && (
-                  <img src={currentRole.avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
-                )}
-                <div 
-                  className={`max-w-[70%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
-                  onClick={() => deleteMode && toggleMessageSelection(m.id)}
-                  dangerouslySetInnerHTML={{ __html: m.content }}
-                />
-                {/* 用户头像（右侧） */}
-                {m.role === 'user' && userProfile.avatar && (
-                  <img src={userProfile.avatar} alt="" className="w-8 h-8 rounded-full object-cover flex-shrink-0" />
-                )}
-              </div>
-            </React.Fragment>
-          );
-        })}
+        {currentMessages.map((m) => (
+          <div key={m.id} className={`flex ${m.role === 'assistant' ? 'justify-start' : 'justify-end'} items-center gap-2`}>
+            {deleteMode && (
+              <input
+                type="checkbox"
+                checked={selectedMessages.has(m.id)}
+                onChange={() => toggleMessageSelection(m.id)}
+                className="w-4 h-4 cursor-pointer"
+              />
+            )}
+            <div 
+              className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${m.role === 'assistant' ? 'bg-white/80 text-slate-800' : 'bg-slate-800 text-white'} ${deleteMode ? 'cursor-pointer' : ''}`}
+              onClick={() => deleteMode && toggleMessageSelection(m.id)}
+              dangerouslySetInnerHTML={{ __html: m.content }}
+            />
+          </div>
+        ))}
         <div ref={messagesEndRef} />
       </div>
-      <div className="card glass p-2 flex items-center gap-1.5" style={{ maxWidth: '100%' }}>
+      <div className="card glass p-3 flex items-center gap-2">
         {/* 上传图片按钮 */}
-        <label className="cursor-pointer p-1.5 rounded-full hover:bg-white/30 transition-colors flex-shrink-0">
+        <label className="cursor-pointer p-2 rounded-full hover:bg-white/30 transition-colors">
           <input
             type="file"
             accept="image/*"
@@ -1871,7 +1583,7 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
           </svg>
         </label>
         <input
-          className="flex-1 min-w-0 bg-white/60 border border-white/60 rounded-xl px-2.5 py-1.5 text-sm focus:outline-none"
+          className="flex-1 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none"
           placeholder="输入消息..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1882,7 +1594,7 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             }
           }}
         />
-        <button className="btn bg-slate-800 text-white shadow-lg px-3 py-1.5 text-sm flex-shrink-0" onClick={handleSend}>发送</button>
+        <button className="btn bg-slate-800 text-white shadow-lg" onClick={handleSend}>发送</button>
       </div>
 
       {showRolePanel && currentRole && currentChat && (
@@ -1914,14 +1626,6 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
       <div className="space-y-4 overflow-y-auto scrollbar pb-6">
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">API 配置</div>
-          <div className="text-xs text-slate-600 bg-blue-50 p-2 rounded-lg">
-            <div className="font-medium text-blue-700 mb-1">💡 如何获取 API Key？</div>
-            <ul className="space-y-1 text-blue-600">
-              <li>• <strong>OpenAI</strong>：访问 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="underline">platform.openai.com</a> 注册并创建Key</li>
-              <li>• <strong>国内中转</strong>：可使用 OpenRouter、硅基流动 等服务</li>
-              <li>• <strong>Base URL</strong>：OpenAI官方填 https://api.openai.com，中转服务填对应地址</li>
-            </ul>
-          </div>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             Base URL
             <input
@@ -1963,41 +1667,15 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
 
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">用户信息</div>
-          <div className="flex items-center gap-3">
-            <label className="cursor-pointer">
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const reader = new FileReader();
-                    reader.onload = (ev) => {
-                      setUserProfile({ ...userProfile, avatar: ev.target?.result as string });
-                    };
-                    reader.readAsDataURL(file);
-                  }
-                }}
-              />
-              {userProfile.avatar ? (
-                <img src={userProfile.avatar} alt="头像" className="w-14 h-14 rounded-full object-cover border-2 border-white/50" />
-              ) : (
-                <div className="w-14 h-14 rounded-full bg-slate-200 flex items-center justify-center text-slate-500 text-xs">上传头像</div>
-              )}
-            </label>
-            <div className="flex-1 space-y-2">
-              <label className="text-sm text-slate-700 flex flex-col gap-1">
-                昵称
-                <input
-                  className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
-                  value={userProfile.nickname}
-                  onChange={(e) => setUserProfile({ ...userProfile, nickname: e.target.value })}
-                  placeholder="你的名字"
-                />
-              </label>
-            </div>
-          </div>
+          <label className="text-sm text-slate-700 flex flex-col gap-1">
+            昵称
+            <input
+              className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
+              value={userProfile.nickname}
+              onChange={(e) => setUserProfile({ ...userProfile, nickname: e.target.value })}
+              placeholder="你的名字"
+            />
+          </label>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             个性签名
             <input
@@ -2007,47 +1685,6 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
               placeholder="一句话介绍自己"
             />
           </label>
-        </section>
-
-        <section className="card glass p-4 space-y-3">
-          <div className="font-semibold text-slate-800">Bark 推送</div>
-          <div className="text-xs text-slate-600 bg-green-50 p-2 rounded-lg">
-            <div className="font-medium text-green-700 mb-1">📱 如何获取 Bark URL？</div>
-            <ul className="space-y-1 text-green-600">
-              <li>1. 在 App Store 搜索并下载 <strong>Bark</strong> 应用</li>
-              <li>2. 打开 Bark，复制首页显示的推送地址</li>
-              <li>3. 格式类似：https://api.day.app/xxxxxx</li>
-            </ul>
-          </div>
-          <label className="text-sm text-slate-700 flex flex-col gap-1">
-            Bark URL
-            <input
-              className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
-              value={barkUrl}
-              onChange={(e) => setBarkUrl(e.target.value)}
-              placeholder="https://api.day.app/你的key"
-            />
-          </label>
-          {barkUrl && (
-            <button 
-              className="btn glass text-sm"
-              onClick={async () => {
-                try {
-                  const testUrl = `${barkUrl}/Anyone测试推送/如果你收到这条消息，说明Bark配置成功！`;
-                  const resp = await fetch(testUrl);
-                  if (resp.ok) {
-                    alert('✅ 测试推送已发送，请检查手机通知');
-                  } else {
-                    alert('❌ 推送失败，请检查Bark URL是否正确');
-                  }
-                } catch (e) {
-                  alert('❌ 推送失败：' + (e as Error).message);
-                }
-              }}
-            >
-              📱 测试推送
-            </button>
-          )}
         </section>
 
         <section className="card glass p-4 space-y-3">
@@ -2069,101 +1706,9 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             </label>
           </div>
         </section>
-
-        <section className="card glass p-4 space-y-3">
-          <div className="font-semibold text-slate-800">账号</div>
-          <p className="text-xs text-slate-600">当前登录：{authUser?.email}</p>
-          <button 
-            className="btn bg-red-500 text-white shadow-lg w-full"
-            onClick={handleSignOut}
-          >
-            退出登录
-          </button>
-        </section>
       </div>
     </div>
   );
-
-  // ============ 登录界面 ============
-  const renderAuthScreen = () => {
-    if (authLoading) {
-      return (
-        <div className="min-h-screen flex items-center justify-center p-6">
-          <div className="phone-shell">
-            <div className="phone-inner flex items-center justify-center">
-              <div className="text-center">
-                <div className="animate-spin w-8 h-8 border-2 border-slate-300 border-t-slate-600 rounded-full mx-auto mb-4"></div>
-                <div className="text-slate-600">加载中...</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="min-h-screen flex items-center justify-center p-6">
-        <div className="phone-shell">
-          <div className="phone-inner flex flex-col gap-6 justify-center">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-slate-800 mb-2">anyone</div>
-              <div className="text-sm text-slate-600">你的AI助手</div>
-            </div>
-            
-            <div className="card glass p-6 space-y-4">
-              <div className="text-center font-semibold text-slate-800">
-                {authMode === 'login' ? '登录' : '注册'}
-              </div>
-              
-              <input
-                type="email"
-                className="w-full bg-white/60 border border-white/70 rounded-xl px-4 py-3"
-                placeholder="邮箱"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-              />
-              
-              <input
-                type="password"
-                className="w-full bg-white/60 border border-white/70 rounded-xl px-4 py-3"
-                placeholder="密码"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAuth()}
-              />
-              
-              {authError && (
-                <div className={`text-sm text-center ${authError.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>
-                  {authError}
-                </div>
-              )}
-              
-              <button
-                className="w-full btn bg-slate-800 text-white shadow-lg py-3"
-                onClick={handleAuth}
-                disabled={authSubmitting || !authEmail || !authPassword}
-              >
-                {authSubmitting ? '处理中...' : (authMode === 'login' ? '登录' : '注册')}
-              </button>
-              
-              <div className="text-center text-sm text-slate-600">
-                {authMode === 'login' ? (
-                  <>还没有账号？<button className="text-blue-600 underline" onClick={() => setAuthMode('register')}>注册</button></>
-                ) : (
-                  <>已有账号？<button className="text-blue-600 underline" onClick={() => setAuthMode('login')}>登录</button></>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // 如果未登录，显示登录界面
-  if (authLoading || !authUser) {
-    return renderAuthScreen();
-  }
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">

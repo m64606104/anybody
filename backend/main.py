@@ -41,13 +41,11 @@ class MemoryCreate(BaseModel):
     type: str = "chat"  # chat, event, note 等
     metadata: Optional[dict] = None
     is_important: bool = False
-    user_id: Optional[str] = None  # 用户ID，用于多用户数据隔离
 
 class MemorySearch(BaseModel):
     query: str
     limit: int = 10
     type: Optional[str] = None  # 可选过滤类型
-    user_id: Optional[str] = None  # 用户ID，用于多用户数据隔离
 
 class ReminderCreate(BaseModel):
     user_id: str
@@ -66,13 +64,6 @@ class ProactiveMessageRequest(BaseModel):
     role_persona: str
     recent_memories: Optional[List[str]] = None
     user_status: Optional[dict] = None  # 位置、失联时长等
-
-class ScheduleActiveCreate(BaseModel):
-    """预约主动联系（不是闹钟，是AI的"备忘录"）"""
-    user_id: str
-    scheduled_at: datetime  # 预约时间
-    topic: str  # 话题/心情/关注点
-    context: Optional[str] = None  # 额外上下文
 
 class WebSearchRequest(BaseModel):
     query: str
@@ -246,27 +237,24 @@ app.add_middleware(
 # ============ 记忆功能 ============
 @app.post("/memory/store")
 async def store_memory(memory: MemoryCreate):
-    """存储记忆（适配现有表结构，支持user_id隔离）"""
+    """存储记忆（适配现有表结构）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 存入数据库（适配现有表结构：id, created_at, type, content, metadata, is_important, user_id）
+    # 存入数据库（适配现有表结构：id, created_at, type, content, metadata, is_important）
     data = {
         "type": memory.type,
         "content": memory.content,
         "metadata": memory.metadata or {},
         "is_important": memory.is_important
     }
-    # 如果提供了user_id，添加到数据中
-    if memory.user_id:
-        data["user_id"] = memory.user_id
     
     result = supabase.table("memories").insert(data).execute()
     return {"success": True, "id": result.data[0]["id"] if result.data else None}
 
 @app.post("/memory/search")
 async def search_memory(search: MemorySearch):
-    """搜索记忆（关键词搜索，支持user_id隔离）"""
+    """搜索记忆（关键词搜索）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
@@ -274,57 +262,57 @@ async def search_memory(search: MemorySearch):
     query = supabase.table("memories").select("*")
     if search.type:
         query = query.eq("type", search.type)
-    # 按user_id过滤
-    if search.user_id:
-        query = query.eq("user_id", search.user_id)
     result = query.ilike("content", f"%{search.query}%").order("created_at", desc=True).limit(search.limit).execute()
     
     return {"memories": result.data}
 
 @app.get("/memory/recent")
-async def get_recent_memories(limit: int = 10, user_id: str = None):
-    """获取最近的记忆（用于注入AI上下文，支持user_id隔离）"""
+async def get_recent_memories(limit: int = 10):
+    """获取最近的记忆（用于注入AI上下文）"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    query = supabase.table("memories").select("*")
-    # 按user_id过滤
-    if user_id:
-        query = query.eq("user_id", user_id)
-    result = query.order("created_at", desc=True).limit(limit).execute()
+    result = supabase.table("memories")\
+        .select("*")\
+        .order("created_at", desc=True)\
+        .limit(limit)\
+        .execute()
     
     return {"memories": result.data}
 
 @app.get("/memory/by_types")
-async def get_memories_by_types(chat_limit: int = 20, capture_limit: int = 50, gps_limit: int = 10, user_id: str = None):
-    """按类型分别获取记忆，避免互相挤掉，支持user_id隔离
-    
-    默认值：聊天20条（本地有完整的，这里只是补充）、截屏50条、GPS10条
-    """
+async def get_memories_by_types(chat_limit: int = 5, capture_limit: int = 3, gps_limit: int = 2):
+    """按类型分别获取记忆，避免互相挤掉"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     result = {}
     
-    # 获取最近聊天记录（本地有完整的，这里只是补充跨设备同步的）
-    chat_query = supabase.table("memories").select("*").eq("type", "chat")
-    if user_id:
-        chat_query = chat_query.eq("user_id", user_id)
-    chat_result = chat_query.order("created_at", desc=True).limit(chat_limit).execute()
+    # 获取最近聊天记录
+    chat_result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "chat")\
+        .order("created_at", desc=True)\
+        .limit(chat_limit)\
+        .execute()
     result["chats"] = chat_result.data or []
     
-    # 获取最近截屏数据（微信、美团、小红书、咸鱼等）
-    capture_query = supabase.table("memories").select("*").eq("type", "screen_capture")
-    if user_id:
-        capture_query = capture_query.eq("user_id", user_id)
-    capture_result = capture_query.order("created_at", desc=True).limit(capture_limit).execute()
+    # 获取最近截屏数据
+    capture_result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "screen_capture")\
+        .order("created_at", desc=True)\
+        .limit(capture_limit)\
+        .execute()
     result["screen_captures"] = capture_result.data or []
     
     # 获取最近GPS记录
-    gps_query = supabase.table("memories").select("*").eq("type", "gps_history")
-    if user_id:
-        gps_query = gps_query.eq("user_id", user_id)
-    gps_result = gps_query.order("created_at", desc=True).limit(gps_limit).execute()
+    gps_result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "gps_history")\
+        .order("created_at", desc=True)\
+        .limit(gps_limit)\
+        .execute()
     result["gps"] = gps_result.data or []
     
     return result
@@ -383,27 +371,9 @@ async def get_user_status():
 # ============ 闹钟功能 ============
 @app.post("/reminder/create")
 async def create_reminder(reminder: ReminderCreate):
-    """创建闹钟（自动去重：相同时间±5分钟内不重复创建）"""
+    """创建闹钟"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    # 检查是否已存在相同时间（±5分钟）的闹钟
-    remind_time = reminder.remind_at
-    time_start = (remind_time - timedelta(minutes=5)).isoformat()
-    time_end = (remind_time + timedelta(minutes=5)).isoformat()
-    
-    existing = supabase.table("reminders")\
-        .select("id, content, remind_at")\
-        .eq("user_id", reminder.user_id)\
-        .eq("is_done", False)\
-        .gte("remind_at", time_start)\
-        .lte("remind_at", time_end)\
-        .execute()
-    
-    if existing.data:
-        # 已存在相同时间的闹钟，跳过创建
-        print(f"⏭️ 跳过重复闹钟: {reminder.content} @ {reminder.remind_at} (已存在: {existing.data[0]['content']})")
-        return {"success": True, "id": existing.data[0]["id"], "skipped": True, "reason": "已存在相同时间的闹钟"}
     
     data = {
         "user_id": reminder.user_id,
@@ -415,7 +385,6 @@ async def create_reminder(reminder: ReminderCreate):
     }
     
     result = supabase.table("reminders").insert(data).execute()
-    print(f"✅ 创建闹钟: {reminder.content} @ {reminder.remind_at}")
     return {"success": True, "id": result.data[0]["id"] if result.data else None}
 
 @app.get("/reminder/list/{user_id}")
@@ -451,100 +420,6 @@ async def delete_reminder(reminder_id: str):
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     supabase.table("reminders").delete().eq("id", reminder_id).execute()
-    return {"success": True}
-
-# ============ 预约主动联系（区别于闹钟） ============
-@app.post("/schedule_active/create")
-async def create_schedule_active(req: ScheduleActiveCreate):
-    """创建预约主动联系（AI的备忘录，不是闹钟）
-    
-    与闹钟的区别：
-    - 闹钟：到点响铃，内容固定
-    - 预约主动联系：到点时AI会根据话题主动找用户聊天，内容是动态生成的
-    """
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    # 检查是否已存在相同时间（±30分钟）的预约
-    time_start = (req.scheduled_at - timedelta(minutes=30)).isoformat()
-    time_end = (req.scheduled_at + timedelta(minutes=30)).isoformat()
-    
-    existing = supabase.table("memories")\
-        .select("id")\
-        .eq("type", "scheduled_active")\
-        .gte("created_at", time_start)\
-        .lte("created_at", time_end)\
-        .execute()
-    
-    if existing.data:
-        print(f"⏭️ 跳过重复预约: {req.topic} @ {req.scheduled_at}")
-        return {"success": True, "skipped": True, "reason": "已存在相同时间的预约"}
-    
-    # 存入memories表，type为scheduled_active
-    data = {
-        "type": "scheduled_active",
-        "content": f"预约主动联系: {req.topic}",
-        "metadata": {
-            "user_id": req.user_id,
-            "scheduled_at": req.scheduled_at.isoformat(),
-            "topic": req.topic,
-            "context": req.context,
-            "is_triggered": False
-        },
-        "is_important": True
-    }
-    
-    result = supabase.table("memories").insert(data).execute()
-    print(f"📅 创建预约主动联系: {req.topic} @ {req.scheduled_at}")
-    return {"success": True, "id": result.data[0]["id"] if result.data else None}
-
-@app.get("/schedule_active/pending")
-async def get_pending_schedule_active():
-    """获取到期的预约主动联系"""
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    now = datetime.utcnow()
-    
-    # 查询到期且未触发的预约
-    result = supabase.table("memories")\
-        .select("*")\
-        .eq("type", "scheduled_active")\
-        .execute()
-    
-    pending = []
-    for item in result.data or []:
-        meta = item.get("metadata", {})
-        if meta.get("is_triggered"):
-            continue
-        scheduled_at = meta.get("scheduled_at")
-        if scheduled_at:
-            scheduled_time = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
-            if scheduled_time <= now:
-                pending.append({
-                    "id": item["id"],
-                    "topic": meta.get("topic"),
-                    "context": meta.get("context"),
-                    "scheduled_at": scheduled_at
-                })
-    
-    return {"pending": pending}
-
-@app.post("/schedule_active/{item_id}/trigger")
-async def trigger_schedule_active(item_id: int):
-    """标记预约已触发"""
-    if not supabase:
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-    
-    # 获取当前metadata
-    result = supabase.table("memories").select("metadata").eq("id", item_id).execute()
-    if not result.data:
-        raise HTTPException(status_code=404, detail="Not found")
-    
-    metadata = result.data[0].get("metadata", {})
-    metadata["is_triggered"] = True
-    
-    supabase.table("memories").update({"metadata": metadata}).eq("id", item_id).execute()
     return {"success": True}
 
 # ============ 主动思考 ============
@@ -1384,17 +1259,17 @@ async def get_user_insights(limit: int = 10):
     return {"insights": result.data}
 
 # ============ 云端同步 ============
-# 多用户模式：通过URL参数传递user_id
+USER_ID = "default_user"  # 单用户模式，固定用户ID
 
 @app.get("/sync/load")
-async def load_sync_data(user_id: str = "default_user"):
-    """从云端加载所有数据（按user_id隔离）"""
+async def load_sync_data():
+    """从云端加载所有数据"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     result = supabase.table("user_sync")\
         .select("*")\
-        .eq("user_id", user_id)\
+        .eq("user_id", USER_ID)\
         .single()\
         .execute()
     
@@ -1414,13 +1289,13 @@ async def load_sync_data(user_id: str = "default_user"):
     return {"found": False}
 
 @app.post("/sync/save")
-async def save_sync_data(data: SyncData, user_id: str = "default_user"):
-    """保存数据到云端（按user_id隔离）"""
+async def save_sync_data(data: SyncData):
+    """保存数据到云端"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     # 构建更新数据
-    update_data = {"user_id": user_id, "updated_at": datetime.utcnow().isoformat()}
+    update_data = {"user_id": USER_ID, "updated_at": datetime.utcnow().isoformat()}
     if data.chats is not None:
         update_data["chats"] = data.chats
     if data.messages is not None:

@@ -39,69 +39,64 @@ export interface ProactiveMessageRequest {
 // ============ API 函数 ============
 
 /**
- * 存储记忆（支持user_id隔离）
+ * 存储记忆
  */
 export async function storeMemory(
   content: string,
   type: string = 'chat',
   metadata?: Record<string, any>,
-  isImportant: boolean = false,
-  userId?: string
+  isImportant: boolean = false
 ): Promise<{ success: boolean; id?: number }> {
   const resp = await fetch(`${API_BASE_URL}/memory/store`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content, type, metadata, is_important: isImportant, user_id: userId }),
+    body: JSON.stringify({ content, type, metadata, is_important: isImportant }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 搜索记忆（支持user_id隔离）
+ * 搜索记忆
  */
 export async function searchMemory(
   query: string,
   limit = 10,
-  type?: string,
-  userId?: string
+  type?: string
 ): Promise<{ memories: Memory[] }> {
   const resp = await fetch(`${API_BASE_URL}/memory/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, limit, type, user_id: userId }),
+    body: JSON.stringify({ query, limit, type }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 获取最近记忆（用于注入AI上下文，支持user_id隔离）
+ * 获取最近记忆（用于注入AI上下文）
  */
-export async function getRecentMemories(limit = 10, userId?: string): Promise<{ memories: Memory[] }> {
-  let url = `${API_BASE_URL}/memory/recent?limit=${limit}`;
-  if (userId) url += `&user_id=${encodeURIComponent(userId)}`;
-  const resp = await fetch(url);
+export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[] }> {
+  const resp = await fetch(`${API_BASE_URL}/memory/recent?limit=${limit}`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 按类型分别获取记忆（避免互相挤掉，支持user_id隔离）
+ * 按类型分别获取记忆（避免互相挤掉）
  */
 export async function getMemoriesByTypes(
   chatLimit = 5,
   captureLimit = 3,
-  gpsLimit = 2,
-  userId?: string
+  gpsLimit = 2
 ): Promise<{
   chats: Memory[];
   screen_captures: Memory[];
   gps: Memory[];
 }> {
-  let url = `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`;
-  if (userId) url += `&user_id=${encodeURIComponent(userId)}`;
-  const resp = await fetch(url);
+  const resp = await fetch(
+    `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`
+  );
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
@@ -222,66 +217,6 @@ export async function getPendingProactiveMessage(): Promise<{
   const resp = await fetch(`${API_BASE_URL}/proactive/pending`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
-}
-
-/**
- * 创建预约主动联系（区别于闹钟）
- */
-export async function createScheduleActive(
-  scheduledAt: string,
-  topic: string,
-  context?: string
-): Promise<{ success: boolean; id?: number; skipped?: boolean }> {
-  const resp = await fetch(`${API_BASE_URL}/schedule_active/create`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user_id: 'default_user',
-      scheduled_at: scheduledAt,
-      topic,
-      context
-    }),
-  });
-  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
-  return resp.json();
-}
-
-/**
- * 解析AI回复中的SCHEDULE_ACTIVE指令
- * 格式: [SCHEDULE_ACTIVE:2026-03-12T08:00:00|话题|上下文(可选)]
- */
-export function parseScheduleActiveFromText(text: string): { time: string; topic: string; context?: string } | null {
-  const match = text.match(/\[SCHEDULE_ACTIVE:([^\]|]+)\|([^\]|]+)(?:\|([^\]]+))?\]/);
-  if (match) {
-    return { time: match[1], topic: match[2], context: match[3] };
-  }
-  return null;
-}
-
-/**
- * 移除SCHEDULE_ACTIVE指令
- */
-export function removeScheduleActiveFromText(text: string): string {
-  return text.replace(/\[SCHEDULE_ACTIVE:[^\]]+\]/g, '').trim();
-}
-
-/**
- * 解析AI回复中的SET_ACTIVE指令（授权角色主动联系权限）
- * 格式: [SET_ACTIVE:true] 或 [SET_ACTIVE:false]
- */
-export function parseSetActiveFromText(text: string): boolean | null {
-  const match = text.match(/\[SET_ACTIVE:(true|false)\]/i);
-  if (match) {
-    return match[1].toLowerCase() === 'true';
-  }
-  return null;
-}
-
-/**
- * 移除SET_ACTIVE指令
- */
-export function removeSetActiveFromText(text: string): string {
-  return text.replace(/\[SET_ACTIVE:(true|false)\]/gi, '').trim();
 }
 
 /**
@@ -540,25 +475,25 @@ export interface SyncData {
 }
 
 /**
- * 从云端加载所有数据（按user_id隔离）
+ * 从云端加载所有数据
  */
-export async function loadSyncData(userId: string = 'default_user'): Promise<{
+export async function loadSyncData(): Promise<{
   found: boolean;
   data?: SyncData & { updated_at?: string };
 }> {
-  const resp = await fetch(`${API_BASE_URL}/sync/load?user_id=${encodeURIComponent(userId)}`);
+  const resp = await fetch(`${API_BASE_URL}/sync/load`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
 /**
- * 保存数据到云端（按user_id隔离）
+ * 保存数据到云端
  */
-export async function saveSyncData(data: SyncData, userId: string = 'default_user'): Promise<{
+export async function saveSyncData(data: SyncData): Promise<{
   success: boolean;
   updated_at?: string;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/sync/save?user_id=${encodeURIComponent(userId)}`, {
+  const resp = await fetch(`${API_BASE_URL}/sync/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
