@@ -761,6 +761,34 @@ MESSAGE: 都10点半了，该睡觉啦！"""
     except Exception as e:
         print(f"❌ 主动思考失败: {e}")
 
+# ============ 调试：检查主动思考状态 ============
+@app.get("/proactive/debug")
+async def debug_proactive():
+    """调试主动思考功能"""
+    global last_proactive_time
+    
+    butler_role = get_butler_role()
+    
+    # 获取最近的proactive_message
+    recent_proactive = []
+    if supabase:
+        result = supabase.table("memories")\
+            .select("*")\
+            .eq("type", "proactive_message")\
+            .order("created_at", desc=True)\
+            .limit(5)\
+            .execute()
+        recent_proactive = result.data or []
+    
+    return {
+        "butler_role_found": butler_role is not None,
+        "butler_role_name": butler_role.get("name") if butler_role else None,
+        "butler_role_isHomeAssistant": butler_role.get("isHomeAssistant") if butler_role else None,
+        "last_proactive_time": str(last_proactive_time) if last_proactive_time else None,
+        "recent_proactive_messages": len(recent_proactive),
+        "scheduler_running": scheduler.running if scheduler else False,
+    }
+
 # ============ 获取待推送的主动消息 ============
 @app.get("/proactive/pending")
 async def get_pending_proactive_messages():
