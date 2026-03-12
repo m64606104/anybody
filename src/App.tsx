@@ -297,10 +297,19 @@ const App: React.FC = () => {
           const cloudData = result.data;
           if (cloudData.roles?.length) {
             setRoles((localRoles) => {
+              const localRoleMap = new Map(localRoles.map(r => [r.id, r]));
               const cloudRoleIds = new Set(cloudData.roles!.map((r: Role) => r.id));
               const localOnlyRoles = localRoles.filter(r => !cloudRoleIds.has(r.id));
-              // 云端角色 + 本地独有的角色
-              return [...cloudData.roles!, ...localOnlyRoles];
+              // 合并云端角色（保留本地角色的最新状态如isHomeAssistant）
+              const mergedCloudRoles = cloudData.roles!.map((cloudRole: Role) => {
+                const localRole = localRoleMap.get(cloudRole.id);
+                if (localRole) {
+                  // 如果本地有这个角色，保留本地的isHomeAssistant等状态
+                  return { ...cloudRole, isHomeAssistant: localRole.isHomeAssistant };
+                }
+                return cloudRole;
+              });
+              return [...mergedCloudRoles, ...localOnlyRoles];
             });
           }
           if (cloudData.chats?.length) {
