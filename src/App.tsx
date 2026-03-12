@@ -1872,6 +1872,14 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
       <div className="space-y-4 overflow-y-auto scrollbar pb-6">
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">API 配置</div>
+          <div className="text-xs text-slate-600 bg-blue-50 p-2 rounded-lg">
+            <div className="font-medium text-blue-700 mb-1">💡 如何获取 API Key？</div>
+            <ul className="space-y-1 text-blue-600">
+              <li>• <strong>OpenAI</strong>：访问 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="underline">platform.openai.com</a> 注册并创建Key</li>
+              <li>• <strong>国内中转</strong>：可使用 OpenRouter、硅基流动 等服务</li>
+              <li>• <strong>Base URL</strong>：OpenAI官方填 https://api.openai.com，中转服务填对应地址</li>
+            </ul>
+          </div>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             Base URL
             <input
@@ -1935,7 +1943,14 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
 
         <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">Bark 推送</div>
-          <p className="text-xs text-slate-600">配置Bark URL后，闹钟提醒会推送到你的手机</p>
+          <div className="text-xs text-slate-600 bg-green-50 p-2 rounded-lg">
+            <div className="font-medium text-green-700 mb-1">📱 如何获取 Bark URL？</div>
+            <ul className="space-y-1 text-green-600">
+              <li>1. 在 App Store 搜索并下载 <strong>Bark</strong> 应用</li>
+              <li>2. 打开 Bark，复制首页显示的推送地址</li>
+              <li>3. 格式类似：https://api.day.app/xxxxxx</li>
+            </ul>
+          </div>
           <label className="text-sm text-slate-700 flex flex-col gap-1">
             Bark URL
             <input
