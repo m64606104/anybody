@@ -500,13 +500,13 @@ async def chat_send(req: ChatSendRequest):
     # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 定义AI可用的工具（Function Calling）
+    # 4. 定义AI可用的工具（Function Calling）- 完全自由使用
     tools = [
         {
             "type": "function",
             "function": {
                 "name": "search_chat_history",
-                "description": "搜索聊天记录。当用户问到之前聊过的内容、历史对话、过去说过的话时使用。可以搜索关键词或获取指定数量的历史记录。",
+                "description": "搜索聊天记录。可以搜索关键词或获取历史记录。随时可用。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -520,13 +520,92 @@ async def chat_send(req: ChatSendRequest):
             "type": "function",
             "function": {
                 "name": "search_memories",
-                "description": "搜索记忆库。当用户问到之前记住的事情、保存的信息时使用。",
+                "description": "搜索记忆库中保存的信息。随时可用。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "keyword": {"type": "string", "description": "搜索关键词"},
                         "limit": {"type": "integer", "description": "返回记录数量，默认20"}
                     }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "save_memory",
+                "description": "保存重要信息到记忆库。可以主动保存用户提到的重要事项、偏好、计划等。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "要保存的内容"},
+                        "title": {"type": "string", "description": "标题/摘要"},
+                        "category": {"type": "string", "description": "分类：preference/schedule/fact/other"}
+                    },
+                    "required": ["content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_reminder",
+                "description": "创建待办事项或闹钟提醒。到时间会通过Bark推送到手机。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "提醒内容"},
+                        "remind_at": {"type": "string", "description": "提醒时间，格式：2026-03-13T08:00:00"},
+                        "repeat": {"type": "string", "description": "重复：daily/weekly/monthly/none"}
+                    },
+                    "required": ["content", "remind_at"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "add_expense",
+                "description": "记账。记录支出。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number", "description": "金额"},
+                        "category": {"type": "string", "description": "分类：food/transport/shopping/entertainment/other"},
+                        "description": {"type": "string", "description": "描述"}
+                    },
+                    "required": ["amount", "category"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_notification",
+                "description": "发送Bark推送通知到用户手机。可以主动发送提醒、问候等。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "通知标题"},
+                        "content": {"type": "string", "description": "通知内容"},
+                        "group": {"type": "string", "description": "分组名称"},
+                        "icon": {"type": "string", "description": "图标URL（可选）"}
+                    },
+                    "required": ["title", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "联网搜索。搜索互联网获取最新信息、新闻、知识等。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词"}
+                    },
+                    "required": ["query"]
                 }
             }
         }
@@ -545,7 +624,6 @@ async def chat_send(req: ChatSendRequest):
             results = query.order("created_at", desc=True).limit(limit).execute().data or []
             if not results:
                 return f"没有找到包含'{keyword}'的聊天记录" if keyword else "没有找到聊天记录"
-            # 格式化结果
             lines = []
             for r in reversed(results):
                 try:
@@ -569,6 +647,94 @@ async def chat_send(req: ChatSendRequest):
             lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in results]
             return f"找到{len(results)}条记忆：\n" + "\n".join(lines)
         
+        elif tool_name == "save_memory":
+            content = args.get("content", "")
+            title = args.get("title", "")
+            category = args.get("category", "other")
+            if not content:
+                return "保存失败：内容不能为空"
+            supabase.table("memories").insert({
+                "content": content,
+                "title": title,
+                "category": category
+            }).execute()
+            return f"已保存记忆：{title or content[:30]}"
+        
+        elif tool_name == "create_reminder":
+            content = args.get("content", "")
+            remind_at = args.get("remind_at", "")
+            repeat = args.get("repeat", "none")
+            if not content or not remind_at:
+                return "创建失败：内容和时间不能为空"
+            supabase.table("reminders").insert({
+                "content": content,
+                "remind_at": remind_at,
+                "repeat": repeat if repeat != "none" else None,
+                "is_done": False
+            }).execute()
+            return f"已创建提醒：{content} @ {remind_at}"
+        
+        elif tool_name == "add_expense":
+            amount = args.get("amount", 0)
+            category = args.get("category", "other")
+            description = args.get("description", "")
+            if not amount:
+                return "记账失败：金额不能为0"
+            now_beijing = datetime.utcnow() + timedelta(hours=8)
+            supabase.table("expenses").insert({
+                "amount": amount,
+                "category": category,
+                "description": description,
+                "date": now_beijing.strftime("%Y-%m-%d")
+            }).execute()
+            return f"已记账：¥{amount} {category} {description}"
+        
+        elif tool_name == "send_notification":
+            title = args.get("title", "")
+            content = args.get("content", "")
+            group = args.get("group", "AI助手")
+            icon = args.get("icon", "")
+            bark_key = os.getenv("BARK_KEY", "")
+            if not bark_key:
+                return "推送失败：未配置Bark"
+            try:
+                import urllib.parse
+                url = f"https://api.day.app/{bark_key}/{urllib.parse.quote(title)}/{urllib.parse.quote(content)}?group={urllib.parse.quote(group)}"
+                if icon:
+                    url += f"&icon={urllib.parse.quote(icon)}"
+                import requests
+                requests.get(url, timeout=10)
+                return f"已推送通知：{title}"
+            except Exception as e:
+                return f"推送失败：{str(e)}"
+        
+        elif tool_name == "web_search":
+            query = args.get("query", "")
+            if not query:
+                return "搜索失败：关键词不能为空"
+            # 使用DuckDuckGo搜索（免费无需API）
+            try:
+                import requests
+                resp = requests.get(
+                    "https://api.duckduckgo.com/",
+                    params={"q": query, "format": "json", "no_html": 1},
+                    timeout=10
+                )
+                data = resp.json()
+                results = []
+                if data.get("Abstract"):
+                    results.append(f"摘要：{data['Abstract']}")
+                if data.get("RelatedTopics"):
+                    for topic in data["RelatedTopics"][:5]:
+                        if isinstance(topic, dict) and topic.get("Text"):
+                            results.append(f"- {topic['Text'][:150]}")
+                if results:
+                    return f"搜索'{query}'的结果：\n" + "\n".join(results)
+                else:
+                    return f"搜索'{query}'没有找到相关结果，可以尝试换个关键词"
+            except Exception as e:
+                return f"搜索失败：{str(e)}"
+        
         return "未知工具"
     
     # 5. 构建系统提示词
@@ -576,20 +742,35 @@ async def chat_send(req: ChatSendRequest):
 
 {context}
 
-## 重要：你可以主动查询数据库
-你有能力随时查询聊天记录和记忆库。当用户问到之前聊过的内容、历史信息、过去的事情时，你应该主动使用工具去查询，而不是说"我无法查看"。
+## 你拥有完全的自由
+你可以随时随地使用任何工具，不需要用户明确要求。你可以：
+- 主动查询聊天记录和记忆库
+- 主动保存重要信息到记忆库
+- 主动创建提醒和待办事项
+- 主动记账
+- 主动发送通知到用户手机
+- 主动联网搜索获取信息
+- 生成任何HTML内容（互动游戏、小工具、网页等）
 
-## 可用工具
-- search_chat_history: 搜索聊天记录，可以按关键词搜索或获取最近N条
+你的创造力没有限制。可以设计互动游戏、记事本、小工具等任何有趣的东西。
+
+## 可用工具（随时可用，不需要用户要求）
+- search_chat_history: 搜索聊天记录，按关键词或获取最近N条（最多500条）
 - search_memories: 搜索记忆库
+- save_memory: 保存重要信息到记忆库
+- create_reminder: 创建待办/闹钟，到时间会推送到手机
+- add_expense: 记账
+- send_notification: 发送Bark推送到用户手机
+- web_search: 联网搜索获取最新信息
 
-## 其他能力
-- 闹钟：[REMINDER:时间|内容]
-- 记账：[EXPENSE:金额|分类|描述]
-- Bark推送：[BARK:标题|内容|分组|图标]
-- HTML渲染：可以直接输出HTML代码
+## HTML能力
+你可以直接输出HTML代码，会在聊天中渲染显示。可以创造：
+- 互动小游戏
+- 记事本/便签
+- 计算器等小工具
+- 任何你想到的有趣东西
 
-请直接回复，需要查询历史时主动使用工具。"""
+发挥你的创造力，给用户惊喜！"""
 
     # 6. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]

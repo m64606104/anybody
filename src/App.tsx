@@ -97,11 +97,20 @@ const useLocalState = <T,>(key: string, initial: T): [T, React.Dispatch<React.Se
   });
 
   useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value));
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      console.warn('localStorage存储失败:', key, e);
+    }
   }, [key, value]);
 
   return [value, setValue];
 };
+
+// 清理旧的消息localStorage（一次性）
+if (typeof window !== 'undefined') {
+  localStorage.removeItem('anyone.messages');
+}
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 
@@ -133,7 +142,8 @@ const App: React.FC = () => {
 
   const [roles, setRoles] = useLocalState<Role[]>('anyone.roles', [defaultRole]);
   const [chats, setChats] = useLocalState<Chat[]>('anyone.chats', [defaultChat]);
-  const [messagesMap, setMessagesMap] = useLocalState<Record<string, Message[]>>('anyone.messages', defaultMessages);
+  // 消息不存localStorage，只存云端，避免配额超限
+  const [messagesMap, setMessagesMap] = useState<Record<string, Message[]>>(defaultMessages);
   const [apiSettings, setApiSettings] = useLocalState<ApiSettings>('anyone.api', {
     apiKey: '',
     baseUrl: 'https://api.openai.com',
