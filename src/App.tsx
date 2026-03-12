@@ -14,7 +14,7 @@ import {
   createCalendarEvent,
   parseEventFromText,
   removeEventFromText,
-  getMemoriesByTypes,
+  getRecentMemories,
   getUserStatus,
   searchMemory,
   parseQueryFromText,
@@ -348,38 +348,25 @@ const App: React.FC = () => {
     // 🔄 自动查询最近记忆和用户状态，注入到AI上下文
     let memoryContext = '';
     let userStatusContext = '';
-    let screenCaptureContext = '';
     
     try {
-      // 按类型分别获取记忆（避免互相挤掉）
-      // 聊天100条、截屏50条、GPS10条
-      const memoriesResult = await getMemoriesByTypes(100, 50, 10);
+      // 获取最近记忆
+      const memoriesResult = await getRecentMemories(50);
       
-      // 聊天记录
-      if (memoriesResult.chats?.length) {
-        const chatList = memoriesResult.chats
-          .map(m => `- ${m.content.slice(0, 150)}`)
+      if (memoriesResult.memories?.length) {
+        const memList = memoriesResult.memories
+          .map((m: { content: string }) => `- ${m.content.slice(0, 150)}`)
           .join('\n');
-        memoryContext = `\n## 最近的聊天记录（来自记忆库，共${memoriesResult.chats.length}条）\n${chatList}`;
-      }
-      
-      // 截屏数据（微信、美团、小红书、咸鱼等）
-      if (memoriesResult.screen_captures?.length) {
-        const captureList = memoriesResult.screen_captures
-          .map(m => {
-            const app = m.metadata?.app || '未知应用';
-            return `- [${app}] ${m.content.slice(0, 500)}`;
-          })
-          .join('\n');
-        screenCaptureContext = `\n## 用户最近的应用截屏内容（共${memoriesResult.screen_captures.length}条，包含微信、美团等应用的活动）\n${captureList}`;
+        memoryContext = `\n## 最近的记忆（共${memoriesResult.memories.length}条）\n${memList}`;
       }
       
       // 获取用户状态（位置、电量等）
       const status = await getUserStatus();
       if (status.location || status.battery) {
-        const parts = [];
+        const parts: string[] = [];
         if (status.location?.address) parts.push(`位置: ${status.location.address}`);
         if (status.battery) parts.push(`电量: ${status.battery}%`);
+        if (status.charging) parts.push('充电中');
         if (status.last_active) parts.push(`最后活跃: ${new Date(status.last_active).toLocaleString('zh-CN')}`);
         if (parts.length) {
           userStatusContext = `\n## 用户当前状态\n${parts.join(' | ')}`;
@@ -408,7 +395,6 @@ const App: React.FC = () => {
 - 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
 ${memoryContext}
-${screenCaptureContext}
 ${userStatusContext}
 
 ## 角色设定

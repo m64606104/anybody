@@ -83,20 +83,20 @@ export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[
 }
 
 /**
- * 按类型分别获取记忆（避免互相挤掉）
+ * 获取最新GPS位置
  */
-export async function getMemoriesByTypes(
-  chatLimit = 5,
-  captureLimit = 3,
-  gpsLimit = 2
-): Promise<{
-  chats: Memory[];
-  screen_captures: Memory[];
-  gps: Memory[];
+export async function getLatestGPS(): Promise<{
+  found: boolean;
+  data?: {
+    latitude: number;
+    longitude: number;
+    address?: string;
+    battery?: number;
+    charging?: boolean;
+    created_at: string;
+  };
 }> {
-  const resp = await fetch(
-    `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`
-  );
+  const resp = await fetch(`${API_BASE_URL}/gps/latest`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
@@ -115,24 +115,33 @@ export async function deleteMemoryByContent(content: string): Promise<{ success:
 }
 
 /**
- * 获取用户状态（最新位置、电量等）
+ * 获取用户状态（从GPS表获取）
  */
 export async function getUserStatus(): Promise<{
   location?: { latitude: number; longitude: number; address?: string };
   battery?: number;
-  last_app?: string;
+  charging?: boolean;
   last_active?: string;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/api/user/status`);
-  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
-  return resp.json();
+  const gps = await getLatestGPS();
+  if (!gps.found || !gps.data) return {};
+  return {
+    location: {
+      latitude: gps.data.latitude,
+      longitude: gps.data.longitude,
+      address: gps.data.address,
+    },
+    battery: gps.data.battery,
+    charging: gps.data.charging,
+    last_active: gps.data.created_at,
+  };
 }
 
 /**
  * 创建闹钟
  */
 export async function createReminder(
-  userId: string,
+  _userId: string,
   content: string,
   remindAt: Date,
   repeat?: 'daily' | 'weekly' | 'monthly'
@@ -141,7 +150,6 @@ export async function createReminder(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      user_id: userId,
       content,
       remind_at: remindAt.toISOString(),
       repeat,
@@ -155,11 +163,11 @@ export async function createReminder(
  * 获取闹钟列表
  */
 export async function listReminders(
-  userId: string,
+  _userId?: string,
   includeDone = false
 ): Promise<{ reminders: Reminder[] }> {
   const resp = await fetch(
-    `${API_BASE_URL}/reminder/list/${userId}?include_done=${includeDone}`
+    `${API_BASE_URL}/reminder/list?include_done=${includeDone}`
   );
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
@@ -213,6 +221,7 @@ export async function generateProactiveMessage(
 export async function getPendingProactiveMessage(): Promise<{
   has_message: boolean;
   message?: string;
+  role?: string;
 }> {
   const resp = await fetch(`${API_BASE_URL}/proactive/pending`);
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
