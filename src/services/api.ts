@@ -220,6 +220,47 @@ export async function getPendingProactiveMessage(): Promise<{
 }
 
 /**
+ * 创建预约主动联系（区别于闹钟）
+ */
+export async function createScheduleActive(
+  scheduledAt: string,
+  topic: string,
+  context?: string
+): Promise<{ success: boolean; id?: number; skipped?: boolean }> {
+  const resp = await fetch(`${API_BASE_URL}/schedule_active/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      user_id: 'default_user',
+      scheduled_at: scheduledAt,
+      topic,
+      context
+    }),
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
+ * 解析AI回复中的SCHEDULE_ACTIVE指令
+ * 格式: [SCHEDULE_ACTIVE:2026-03-12T08:00:00|话题|上下文(可选)]
+ */
+export function parseScheduleActiveFromText(text: string): { time: string; topic: string; context?: string } | null {
+  const match = text.match(/\[SCHEDULE_ACTIVE:([^\]|]+)\|([^\]|]+)(?:\|([^\]]+))?\]/);
+  if (match) {
+    return { time: match[1], topic: match[2], context: match[3] };
+  }
+  return null;
+}
+
+/**
+ * 移除SCHEDULE_ACTIVE指令
+ */
+export function removeScheduleActiveFromText(text: string): string {
+  return text.replace(/\[SCHEDULE_ACTIVE:[^\]]+\]/g, '').trim();
+}
+
+/**
  * 解析AI回复中的REMINDER指令
  * 格式: [REMINDER:2026-03-12T08:00:00|开会]
  * 返回: { time: Date, content: string } 或 null

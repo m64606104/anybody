@@ -65,6 +65,13 @@ class ProactiveMessageRequest(BaseModel):
     recent_memories: Optional[List[str]] = None
     user_status: Optional[dict] = None  # 位置、失联时长等
 
+class ScheduleActiveCreate(BaseModel):
+    """预约主动联系（不是闹钟，是AI的"备忘录"）"""
+    user_id: str
+    scheduled_at: datetime  # 预约时间
+    topic: str  # 话题/心情/关注点
+    context: Optional[str] = None  # 额外上下文
+
 class WebSearchRequest(BaseModel):
     query: str
     num_results: int = 5
@@ -442,6 +449,100 @@ async def delete_reminder(reminder_id: str):
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
     supabase.table("reminders").delete().eq("id", reminder_id).execute()
+    return {"success": True}
+
+# ============ 预约主动联系（区别于闹钟） ============
+@app.post("/schedule_active/create")
+async def create_schedule_active(req: ScheduleActiveCreate):
+    """创建预约主动联系（AI的备忘录，不是闹钟）
+    
+    与闹钟的区别：
+    - 闹钟：到点响铃，内容固定
+    - 预约主动联系：到点时AI会根据话题主动找用户聊天，内容是动态生成的
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 检查是否已存在相同时间（±30分钟）的预约
+    time_start = (req.scheduled_at - timedelta(minutes=30)).isoformat()
+    time_end = (req.scheduled_at + timedelta(minutes=30)).isoformat()
+    
+    existing = supabase.table("memories")\
+        .select("id")\
+        .eq("type", "scheduled_active")\
+        .gte("created_at", time_start)\
+        .lte("created_at", time_end)\
+        .execute()
+    
+    if existing.data:
+        print(f"⏭️ 跳过重复预约: {req.topic} @ {req.scheduled_at}")
+        return {"success": True, "skipped": True, "reason": "已存在相同时间的预约"}
+    
+    # 存入memories表，type为scheduled_active
+    data = {
+        "type": "scheduled_active",
+        "content": f"预约主动联系: {req.topic}",
+        "metadata": {
+            "user_id": req.user_id,
+            "scheduled_at": req.scheduled_at.isoformat(),
+            "topic": req.topic,
+            "context": req.context,
+            "is_triggered": False
+        },
+        "is_important": True
+    }
+    
+    result = supabase.table("memories").insert(data).execute()
+    print(f"📅 创建预约主动联系: {req.topic} @ {req.scheduled_at}")
+    return {"success": True, "id": result.data[0]["id"] if result.data else None}
+
+@app.get("/schedule_active/pending")
+async def get_pending_schedule_active():
+    """获取到期的预约主动联系"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    now = datetime.utcnow()
+    
+    # 查询到期且未触发的预约
+    result = supabase.table("memories")\
+        .select("*")\
+        .eq("type", "scheduled_active")\
+        .execute()
+    
+    pending = []
+    for item in result.data or []:
+        meta = item.get("metadata", {})
+        if meta.get("is_triggered"):
+            continue
+        scheduled_at = meta.get("scheduled_at")
+        if scheduled_at:
+            scheduled_time = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+            if scheduled_time <= now:
+                pending.append({
+                    "id": item["id"],
+                    "topic": meta.get("topic"),
+                    "context": meta.get("context"),
+                    "scheduled_at": scheduled_at
+                })
+    
+    return {"pending": pending}
+
+@app.post("/schedule_active/{item_id}/trigger")
+async def trigger_schedule_active(item_id: int):
+    """标记预约已触发"""
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+    
+    # 获取当前metadata
+    result = supabase.table("memories").select("metadata").eq("id", item_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Not found")
+    
+    metadata = result.data[0].get("metadata", {})
+    metadata["is_triggered"] = True
+    
+    supabase.table("memories").update({"metadata": metadata}).eq("id", item_id).execute()
     return {"success": True}
 
 # ============ 主动思考 ============

@@ -18,6 +18,9 @@ import {
   getUserStatus,
   searchMemory,
   parseQueryFromText,
+  createScheduleActive,
+  parseScheduleActiveFromText,
+  removeScheduleActiveFromText,
   deleteMemoryByContent,
   removeQueryFromText,
   loadSyncData,
@@ -417,20 +420,25 @@ ${timeInfo}
 
 ## 你的能力
 1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供最近的记忆
-2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
-3. **日历事件**：你可以帮用户创建日程安排
-4. **记账**：你可以帮用户记录支出
-5. **联网搜索**：你可以搜索网络获取最新信息
-6. **查询记忆**：你可以搜索用户的历史记忆
-7. **主动消息**：当用户充电时，系统会自动触发你主动发消息
+2. **闹钟提醒**：帮用户设置固定时间的提醒（到点响铃，内容固定）
+3. **预约主动联系**：你可以预约在未来某个时间主动找用户聊天（内容动态生成）
+4. **日历事件**：你可以帮用户创建日程安排
+5. **记账**：你可以帮用户记录支出
+6. **联网搜索**：你可以搜索网络获取最新信息
+7. **查询记忆**：你可以搜索用户的历史记忆
 8. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
 
 ## 特殊指令格式（在回复中使用，系统会自动执行）
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]（用于"提醒我做某事"、"定个闹钟"等固定提醒）
+- 预约主动联系：[SCHEDULE_ACTIVE:2026-03-12T08:00:00|话题|上下文]（用于"明天来问问我"、"找我聊聊"等主动关怀）
 - 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
 - 记账：[EXPENSE:50|food|午餐]
 - 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
+
+## 闹钟 vs 主动联系的区别（重要）
+- **闹钟[REMINDER]**：用户明确说"提醒我"、"定个闹钟"、"别忘了"时使用。到点响铃，内容固定。
+- **主动联系[SCHEDULE_ACTIVE]**：用户说"你明天来问问我进度"、"你找我聊聊天"、"关注一下我"时使用。这是你作为助手的自我职责，到时候你会根据话题主动找用户聊天，内容是动态生成的。
 ${memoryContext}
 ${screenCaptureContext}
 ${userStatusContext}
@@ -604,12 +612,28 @@ ${rolePrompt || '（无特定角色设定）'}
       }
     }
     
+    // 解析SCHEDULE_ACTIVE指令（预约主动联系，区别于闹钟）
+    const scheduleActive = parseScheduleActiveFromText(content);
+    if (scheduleActive) {
+      console.log('📅 检测到SCHEDULE_ACTIVE指令:', scheduleActive);
+      createScheduleActive(scheduleActive.time, scheduleActive.topic, scheduleActive.context)
+        .then((res) => {
+          if (res.skipped) {
+            console.log('⏭️ 跳过重复预约');
+          } else {
+            console.log('✅ 预约主动联系创建成功');
+          }
+        })
+        .catch(e => console.warn('❌ 预约主动联系创建失败:', e));
+    }
+    
     // 移除所有指令后的干净文本
     let cleanContent = removeReminderFromText(content);
     cleanContent = removeExpenseFromText(cleanContent);
     cleanContent = removeSearchFromText(cleanContent);
     cleanContent = removeEventFromText(cleanContent);
     cleanContent = removeQueryFromText(cleanContent);
+    cleanContent = removeScheduleActiveFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
