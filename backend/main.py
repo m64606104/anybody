@@ -123,8 +123,8 @@ def get_persona():
         return "\n".join([f"[{x['trait_category']}]{x['trait_detail']}" for x in r.data]) if r.data else ""
     except: return ""
 
-def get_all_context():
-    """获取Supabase所有数据作为AI的资料库"""
+def get_all_context(role_id: str = None):
+    """获取Supabase所有数据作为AI的资料库，可按role_id过滤聊天记录"""
     if not supabase: return ""
     
     # 时间
@@ -168,8 +168,11 @@ def get_all_context():
     memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(20).execute().data or []
     mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:50]}" for m in memories]) if memories else "无"
     
-    # 最近聊天（包含时间，让AI知道消息间隔）
-    chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(20).execute().data or []
+    # 最近聊天（包含时间，让AI知道消息间隔）- 按role_id过滤
+    chat_query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
+    if role_id:
+        chat_query = chat_query.eq("role_id", role_id)
+    chats = chat_query.order("created_at", desc=True).limit(30).execute().data or []
     def format_chat_time(created_at):
         try:
             t = datetime.fromisoformat(created_at.replace("Z", "+00:00").replace("+00:00", ""))
@@ -494,8 +497,8 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取完整资料库（与主动消息一致）
-    context = get_all_context()
+    # 3. 获取完整资料库（按role_id过滤聊天记录）
+    context = get_all_context(role_id=req.role_id)
     
     # 4. 构建系统提示词
     system_prompt = f"""{role_prompt}
