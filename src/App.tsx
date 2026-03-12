@@ -240,12 +240,14 @@ const App: React.FC = () => {
   const currentRole = roles.find((r) => r.id === currentChat?.roleId) ?? roles[0];
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // 使用scrollIntoView但限制在容器内，避免整页被顶上去
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   };
 
   useEffect(() => {
     if (screen === 'chat') {
-      scrollToBottom();
+      // 延迟滚动，等待DOM渲染完成
+      setTimeout(scrollToBottom, 100);
     }
   }, [screen, currentMessages]);
 
@@ -1074,9 +1076,9 @@ const App: React.FC = () => {
         })}
         <div ref={messagesEndRef} />
       </div>
-      <div className="card glass p-3 flex items-center gap-2">
+      <div className="card glass p-2 flex items-center gap-2 chat-input-area flex-shrink-0">
         {/* 上传图片按钮 */}
-        <label className="cursor-pointer p-2 rounded-full hover:bg-white/30 transition-colors">
+        <label className="cursor-pointer p-1.5 rounded-full hover:bg-white/30 transition-colors flex-shrink-0">
           <input
             type="file"
             accept="image/*"
@@ -1101,7 +1103,7 @@ const App: React.FC = () => {
           </svg>
         </label>
         <input
-          className="flex-1 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none"
+          className="flex-1 min-w-0 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none text-sm"
           placeholder="输入消息..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1112,7 +1114,7 @@ const App: React.FC = () => {
             }
           }}
         />
-        <button className="btn bg-slate-800 text-white shadow-lg" onClick={handleSend}>发送</button>
+        <button className="btn bg-slate-800 text-white shadow-lg flex-shrink-0 text-sm px-3 py-2" onClick={handleSend}>发送</button>
       </div>
 
       {showRolePanel && currentRole && currentChat && (
