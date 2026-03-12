@@ -165,15 +165,15 @@ def get_all_context(role_id: str = None):
     reminders = supabase.table("reminders").select("content,remind_at,repeat").eq("is_done", False).order("remind_at").limit(10).execute().data or []
     reminder_list = "\n".join([f"- {r['content']} ({r['remind_at']})" + (f" [重复:{r['repeat']}]" if r.get('repeat') else "") for r in reminders]) if reminders else "无"
     
-    # 最近记忆
-    memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(20).execute().data or []
-    mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:50]}" for m in memories]) if memories else "无"
+    # 所有记忆（不限制数量）
+    memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(100).execute().data or []
+    mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in memories]) if memories else "无"
     
-    # 最近聊天（包含时间，让AI知道消息间隔）- 按role_id过滤
+    # 聊天记录（扩大到100条）- 按role_id过滤
     chat_query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
     if role_id:
         chat_query = chat_query.eq("role_id", role_id)
-    chats = chat_query.order("created_at", desc=True).limit(30).execute().data or []
+    chats = chat_query.order("created_at", desc=True).limit(100).execute().data or []
     def format_chat_time(created_at):
         try:
             t = datetime.fromisoformat(created_at.replace("Z", "+00:00").replace("+00:00", ""))
@@ -501,31 +501,37 @@ async def chat_send(req: ChatSendRequest):
     # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 构建系统提示词（不使用Function Calling，用文本指令）
-    system_prompt = f"""{role_prompt}
+    # 4. 构建系统提示词
+    system_prompt = f"""## 核心身份：你拥有完整数据库访问权限
+
+### 你能看到的所有数据（下面已经完整提供给你）：
+1. **聊天记录** - 【最近聊天记录】包含最近100条对话，你完全可以看到并引用
+2. **记忆库** - 【最近记忆】包含保存的所有重要信息（最多100条）
+3. **用户位置** - 【位置与设备】告诉你用户现在在哪里、电量、WiFi等
+4. **健康数据** - 【健康与天气】包含天气、心率、步数、睡眠等
+5. **待办事项** - 【待办事项】是用户的提醒和闹钟
+6. **支出记录** - 【最近支出】是用户的记账数据
+7. **用户画像** - 【用户画像】是用户的个人特征
+
+### 你能做的事情：
+- 设置闹钟/提醒：在回复中写 [REMINDER:2026-03-13T08:00:00|提醒内容]
+- 记账：在回复中写 [EXPENSE:50|food|午餐]
+- 推送通知：在回复中写 [BARK:标题|内容|分组名]
+- 生成HTML：直接输出HTML代码，会被渲染显示
+
+### 重要规则：
+**永远不要说"我无法查看聊天记录"、"我没有记忆"、"我没有长期记忆"！**
+**因为下面的数据就是你的完整记忆，你必须使用它们！**
+
+{role_prompt}
+
+===== 以下是你的完整数据库 =====
 
 {context}
 
-## 可用能力
-- 记忆库：上面已提供最近记忆
-- 闹钟：到时间会通过Bark推送到手机
-- 记账：分类有food/transport/shopping/entertainment/other
-- Bark推送：回复会自动推送到用户手机
-- 位置感知：上面已提供当前位置和电量
-- HTML渲染：你可以直接输出HTML代码，会在聊天中渲染显示
-- 代码生成：用户让你写代码时直接输出，用```包裹
+===== 数据库结束 =====
 
-## 特殊指令格式（在回复中使用，系统会自动执行）
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
-- 记账：[EXPENSE:50|food|午餐]
-- 推送通知：[BARK:标题|内容|分组名|图标URL]
-
-## HTML示例
-如果用户要求生成网页/交互内容，可以直接输出HTML：
-<div style="padding:10px;background:#f0f0f0;border-radius:8px">内容</div>
-<button onclick="alert('点击')">按钮</button>
-
-请直接回复。"""
+请基于上面的完整数据回复用户。记住：你拥有记忆，你能看到聊天记录，请善用它们！"""
 
     # 6. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]
