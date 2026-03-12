@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { User } from '@supabase/supabase-js';
 import { 
   storeMemory, 
   createReminder, 
@@ -29,6 +30,16 @@ import {
   saveSyncData,
   syncMessage
 } from './services/api';
+import { 
+  initAuth, 
+  onAuthStateChange, 
+  signIn, 
+  signUp, 
+  signOut, 
+  getCurrentUserId,
+  getUserConfig,
+  saveUserConfig
+} from './services/auth';
 
 type Screen = 'home' | 'chatList' | 'chat' | 'settings';
 
@@ -131,6 +142,15 @@ const defaultHomeApps: HomeApp[] = [
 ];
 
 const App: React.FC = () => {
+  // ============ 认证状态 ============
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+
   const [screen, setScreen] = useState<Screen>('home');
   const [selectedChatId, setSelectedChatId] = useState<string>(defaultChat.id);
 
@@ -151,6 +171,7 @@ const App: React.FC = () => {
     nickname: '',
     signature: '',
   });
+  const [barkUrl, setBarkUrl] = useLocalState<string>('anyone.barkUrl', '');
 
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelTestStatus, setModelTestStatus] = useState<string>('');
@@ -171,9 +192,102 @@ const App: React.FC = () => {
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const syncTimeoutRef = useRef<number | null>(null);
 
+  // ============ 认证初始化 ============
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const user = await initAuth();
+        setAuthUser(user);
+        // 如果已登录，加载用户配置
+        if (user) {
+          const config = await getUserConfig();
+          if (config) {
+            if (config.openai_api_key) {
+              setApiSettings(prev => ({
+                ...prev,
+                apiKey: config.openai_api_key || '',
+                baseUrl: config.openai_base_url || prev.baseUrl,
+                model: config.openai_model || prev.model,
+              }));
+            }
+            if (config.bark_url) setBarkUrl(config.bark_url);
+          }
+        }
+      } catch (e) {
+        console.warn('认证初始化失败:', e);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+    init();
+
+    // 监听认证状态变化
+    const { data: { subscription } } = onAuthStateChange((user) => {
+      setAuthUser(user);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // 登录/注册处理
+  const handleAuth = async () => {
+    setAuthError('');
+    setAuthSubmitting(true);
+    try {
+      if (authMode === 'login') {
+        const { user, error } = await signIn(authEmail, authPassword);
+        if (error) {
+          setAuthError(error.message);
+        } else if (user) {
+          setAuthUser(user);
+          // 加载用户配置
+          const config = await getUserConfig();
+          if (config) {
+            if (config.openai_api_key) {
+              setApiSettings(prev => ({
+                ...prev,
+                apiKey: config.openai_api_key || '',
+                baseUrl: config.openai_base_url || prev.baseUrl,
+                model: config.openai_model || prev.model,
+              }));
+            }
+            if (config.bark_url) setBarkUrl(config.bark_url);
+          }
+        }
+      } else {
+        const { user, error } = await signUp(authEmail, authPassword);
+        if (error) {
+          setAuthError(error.message);
+        } else if (user) {
+          setAuthError('注册成功！请检查邮箱确认后登录。');
+          setAuthMode('login');
+        }
+      }
+    } catch (e: any) {
+      setAuthError(e.message || '操作失败');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  // 登出处理
+  const handleSignOut = async () => {
+    await signOut();
+    setAuthUser(null);
+    // 清空本地数据
+    setRoles([defaultRole]);
+    setChats([defaultChat]);
+    setMessagesMap({});
+    setApiSettings({ apiKey: '', baseUrl: 'https://api.openai.com', model: '' });
+    setBarkUrl('');
+  };
+
   // ============ 云端同步逻辑 ============
   // 启动时从云端加载数据
   useEffect(() => {
+    if (!authUser) return; // 未登录不同步
     const loadFromCloud = async () => {
       try {
         const result = await loadSyncData();
@@ -1819,6 +1933,20 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
         </section>
 
         <section className="card glass p-4 space-y-3">
+          <div className="font-semibold text-slate-800">Bark 推送</div>
+          <p className="text-xs text-slate-600">配置Bark URL后，闹钟提醒会推送到你的手机</p>
+          <label className="text-sm text-slate-700 flex flex-col gap-1">
+            Bark URL
+            <input
+              className="bg-white/60 border border-white/70 rounded-xl px-3 py-2"
+              value={barkUrl}
+              onChange={(e) => setBarkUrl(e.target.value)}
+              placeholder="https://api.day.app/你的key"
+            />
+          </label>
+        </section>
+
+        <section className="card glass p-4 space-y-3">
           <div className="font-semibold text-slate-800">应用迁移</div>
           <p className="text-xs text-slate-600">导出或导入全部应用数据（角色、聊天、设置等）</p>
           <div className="flex gap-3">
@@ -1837,9 +1965,101 @@ ${userProfile.nickname ? `用户的名字是：${userProfile.nickname}` : ''}
             </label>
           </div>
         </section>
+
+        <section className="card glass p-4 space-y-3">
+          <div className="font-semibold text-slate-800">账号</div>
+          <p className="text-xs text-slate-600">当前登录：{authUser?.email}</p>
+          <button 
+            className="btn bg-red-500 text-white shadow-lg w-full"
+            onClick={handleSignOut}
+          >
+            退出登录
+          </button>
+        </section>
       </div>
     </div>
   );
+
+  // ============ 登录界面 ============
+  const renderAuthScreen = () => {
+    if (authLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="phone-shell">
+            <div className="phone-inner flex items-center justify-center">
+              <div className="text-center">
+                <div className="animate-spin w-8 h-8 border-2 border-slate-300 border-t-slate-600 rounded-full mx-auto mb-4"></div>
+                <div className="text-slate-600">加载中...</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="phone-shell">
+          <div className="phone-inner flex flex-col gap-6 justify-center">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-slate-800 mb-2">anyone</div>
+              <div className="text-sm text-slate-600">你的AI助手</div>
+            </div>
+            
+            <div className="card glass p-6 space-y-4">
+              <div className="text-center font-semibold text-slate-800">
+                {authMode === 'login' ? '登录' : '注册'}
+              </div>
+              
+              <input
+                type="email"
+                className="w-full bg-white/60 border border-white/70 rounded-xl px-4 py-3"
+                placeholder="邮箱"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+              />
+              
+              <input
+                type="password"
+                className="w-full bg-white/60 border border-white/70 rounded-xl px-4 py-3"
+                placeholder="密码"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAuth()}
+              />
+              
+              {authError && (
+                <div className={`text-sm text-center ${authError.includes('成功') ? 'text-green-600' : 'text-red-500'}`}>
+                  {authError}
+                </div>
+              )}
+              
+              <button
+                className="w-full btn bg-slate-800 text-white shadow-lg py-3"
+                onClick={handleAuth}
+                disabled={authSubmitting || !authEmail || !authPassword}
+              >
+                {authSubmitting ? '处理中...' : (authMode === 'login' ? '登录' : '注册')}
+              </button>
+              
+              <div className="text-center text-sm text-slate-600">
+                {authMode === 'login' ? (
+                  <>还没有账号？<button className="text-blue-600 underline" onClick={() => setAuthMode('register')}>注册</button></>
+                ) : (
+                  <>已有账号？<button className="text-blue-600 underline" onClick={() => setAuthMode('login')}>登录</button></>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // 如果未登录，显示登录界面
+  if (authLoading || !authUser) {
+    return renderAuthScreen();
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
