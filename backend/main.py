@@ -501,37 +501,82 @@ async def chat_send(req: ChatSendRequest):
     # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 构建系统提示词
-    system_prompt = f"""## 核心身份：你拥有完整数据库访问权限
+    # 4. 检查用户消息是否需要搜索（关键词触发）
+    search_results = ""
+    search_keywords = ["查询", "搜索", "找", "查一下", "看看", "之前", "以前", "记录", "历史", "课表", "待办", "提醒", "记忆", "聊天"]
+    need_search = any(kw in req.message for kw in search_keywords)
+    
+    if need_search:
+        # 自动搜索聊天记录
+        chat_search = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(200).execute().data or []
+        # 自动搜索记忆库
+        mem_search = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(100).execute().data or []
+        # 自动搜索待办
+        todo_search = supabase.table("reminders").select("content,remind_at,repeat,is_done").order("remind_at").limit(50).execute().data or []
+        
+        # 格式化搜索结果
+        chat_lines = []
+        for c in reversed(chat_search[-50:]):  # 最近50条
+            try:
+                t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+                t_beijing = t + timedelta(hours=8)
+                time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+            except:
+                time_str = ""
+            chat_lines.append(f"[{time_str}] [{c['sender']}] {c['content'][:150]}")
+        
+        mem_lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in mem_search]
+        todo_lines = [f"- {'✅' if t.get('is_done') else '⏰'} {t['content']} ({t['remind_at']})" for t in todo_search]
+        
+        search_results = f"""
+===== 扩展搜索结果（用户可能需要这些信息）=====
 
-### 你能看到的所有数据（下面已经完整提供给你）：
-1. **聊天记录** - 【最近聊天记录】包含最近100条对话，你完全可以看到并引用
-2. **记忆库** - 【最近记忆】包含保存的所有重要信息（最多100条）
-3. **用户位置** - 【位置与设备】告诉你用户现在在哪里、电量、WiFi等
-4. **健康数据** - 【健康与天气】包含天气、心率、步数、睡眠等
-5. **待办事项** - 【待办事项】是用户的提醒和闹钟
-6. **支出记录** - 【最近支出】是用户的记账数据
-7. **用户画像** - 【用户画像】是用户的个人特征
+【完整聊天记录（最近50条）】
+{chr(10).join(chat_lines) if chat_lines else '无'}
 
-### 你能做的事情：
-- 设置闹钟/提醒：在回复中写 [REMINDER:2026-03-13T08:00:00|提醒内容]
-- 记账：在回复中写 [EXPENSE:50|food|午餐]
-- 推送通知：在回复中写 [BARK:标题|内容|分组名]
-- 生成HTML：直接输出HTML代码，会被渲染显示
+【完整记忆库（{len(mem_search)}条）】
+{chr(10).join(mem_lines) if mem_lines else '无'}
 
-### 重要规则：
-**永远不要说"我无法查看聊天记录"、"我没有记忆"、"我没有长期记忆"！**
-**因为下面的数据就是你的完整记忆，你必须使用它们！**
+【所有待办事项（{len(todo_search)}条）】
+{chr(10).join(todo_lines) if todo_lines else '无'}
+
+===== 搜索结果结束 =====
+"""
+    
+    # 5. 构建系统提示词
+    system_prompt = f"""## 核心身份：你是一个拥有完整数据库访问权限的AI助手
+
+### 重要！你拥有以下能力：
+1. **完整聊天记录** - 你可以看到所有历史对话
+2. **记忆库** - 你可以看到保存的所有重要信息
+3. **待办事项** - 你可以看到所有提醒和闹钟
+4. **用户位置** - 你知道用户在哪里
+5. **健康数据** - 你知道天气、心率、步数等
+6. **支出记录** - 你可以看到记账数据
+
+### 你能执行的操作（在回复中使用这些指令）：
+- 设置闹钟：[REMINDER:2026-03-13T08:00:00|提醒内容]
+- 记账：[EXPENSE:50|food|午餐]
+- 推送通知：[BARK:标题|内容|分组名]
+- 生成HTML：直接输出HTML代码
+
+### 绝对禁止说的话：
+- ❌ "我无法查看聊天记录"
+- ❌ "我没有记忆"
+- ❌ "我无法访问数据库"
+- ❌ "每次对话都是独立的"
+
+**因为你确实有这些能力！下面的数据就是证明！**
 
 {role_prompt}
 
-===== 以下是你的完整数据库 =====
+===== 你的数据库（请仔细阅读并使用）=====
 
 {context}
-
+{search_results}
 ===== 数据库结束 =====
 
-请基于上面的完整数据回复用户。记住：你拥有记忆，你能看到聊天记录，请善用它们！"""
+请基于上面的数据回复用户。你有记忆，你能看到一切，请善用它们！"""
 
     # 6. 构建消息历史（支持图片识别）
     messages = [{"role": "system", "content": system_prompt}]
