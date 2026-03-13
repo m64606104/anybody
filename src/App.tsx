@@ -421,7 +421,16 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
+    // 当前时间
+    const currentTime = new Date().toLocaleString('zh-CN', { 
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      weekday: 'long', hour: '2-digit', minute: '2-digit'
+    });
+    
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 当前时间
+${currentTime}
 
 ## 你的能力
 1. **记忆能力**：你可以访问用户记忆，下面会提供最近的记忆和截屏数据
@@ -429,8 +438,10 @@ const App: React.FC = () => {
 3. **日历事件**：你可以帮用户创建日程安排
 4. **记账**：你可以帮用户记录支出
 5. **联网搜索**：你可以搜索网络获取最新信息
-6. **查询记忆**：你可以搜索用户的历史记忆
+6. **查询记忆**：你可以搜索用户的历史记忆（用[QUERY:关键词]查询更早的记录）
 7. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
+
+**注意：聊天记录中的时间戳格式为[今天 14:30]或[昨天 10:00]或[3/12 09:00]，请根据时间戳判断消息的时间。**
 
 ## 特殊指令格式
 这些指令会被系统自动执行，**指令本身会被隐藏，用户看不到**。你可以自由使用。
@@ -465,12 +476,23 @@ ${rolePrompt || '（无特定角色设定）'}
       limitedHistory = limitedHistory.slice(-200);
     }
     
+    // 格式化时间戳
+    const formatTime = (ts: number) => {
+      const d = new Date(ts);
+      const isToday = d.toDateString() === new Date().toDateString();
+      const isYesterday = d.toDateString() === new Date(now - 86400000).toDateString();
+      const timeStr = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      if (isToday) return `今天 ${timeStr}`;
+      if (isYesterday) return `昨天 ${timeStr}`;
+      return d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) + ' ' + timeStr;
+    };
+    
     const imgPattern = /<img[^>]+src="data:image\/[^"]+"/g;
     const apiMessages = [
       { role: 'system', content: systemPrompt },
       ...limitedHistory.map((m) => ({ 
         role: m.role, 
-        content: m.content.replace(imgPattern, '[图片]') 
+        content: `[${formatTime(m.createdAt)}] ${m.content.replace(imgPattern, '[图片]')}` 
       })),
     ];
     
