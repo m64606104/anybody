@@ -284,10 +284,17 @@ async def proactive_thinking():
     roles = sorted(roles, key=lambda r: 0 if r.get("id") == active else 1)
     
     winner, msg = None, None
+    # 获取当前北京时间
+    now_beijing = now + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    current_time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
+    
     for role in roles:
         sp = build_role_prompt(role)
         # 系统提示词与聊天对齐，让AI知道所有可用信息
-        sys_prompt = f"""{sp}
+        sys_prompt = f"""当前时间：{current_time_str}
+
+{sp}
 
 ## 可用能力
 - 记忆库：上面已提供最近记忆
@@ -298,7 +305,8 @@ async def proactive_thinking():
 
 ## 输出格式
 - 不发消息回复PASS
-- 发消息回复MESSAGE:内容（内容可以包含HTML）"""
+- 发消息回复MESSAGE:内容（内容可以包含HTML）
+- 直接用自然语言，不要返回JSON格式"""
         try:
             dec = (await call_ai(sys_prompt, prompt)).strip()
             if dec.upper().startswith("MESSAGE:"):
@@ -498,11 +506,13 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取24小时内的聊天记录（默认只看最近24小时，需要更多时用QUERY查询）
+    # 3. 获取最近的聊天记录作为对话历史
     recent_history = []
+    
+    # 策略：优先使用前端传来的历史，放宽到72小时
     if req.history:
-        now = datetime.utcnow().timestamp() * 1000  # 毫秒时间戳
-        one_day_ago = now - 24 * 60 * 60 * 1000
+        now_ts = datetime.utcnow().timestamp() * 1000  # 毫秒时间戳
+        three_days_ago = now_ts - 72 * 60 * 60 * 1000  # 72小时
         for h in req.history:
             created_at = h.get("createdAt") or h.get("created_at") or 0
             if isinstance(created_at, str):
@@ -510,12 +520,26 @@ async def chat_send(req: ChatSendRequest):
                     created_at = datetime.fromisoformat(created_at.replace("Z", "")).timestamp() * 1000
                 except:
                     created_at = 0
-            if created_at >= one_day_ago:
+            if created_at >= three_days_ago:
                 recent_history.append(h)
-        # 如果24小时内没有消息，至少保留最近10条
+        # 如果72小时内没有消息，至少保留最近10条
         if not recent_history:
             recent_history = req.history[-10:]
-    print(f"📝 24小时内历史: {len(recent_history)}条 (完整历史可用QUERY查询)")
+            
+    # 如果前端没有传历史，或者历史太少（比如刚刷新页面），从数据库兜底获取
+    if len(recent_history) <= 1 and supabase:
+        print("⚠️ 前端历史记录为空或太少，从数据库获取最近50条历史兜底...")
+        db_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(50).execute().data or []
+        db_history = []
+        for c in reversed(db_chats):
+            db_history.append({
+                "role": "assistant" if c["sender"] == "assistant" else "user",
+                "content": c["content"],
+                "created_at": c["created_at"]
+            })
+        recent_history = db_history
+        
+    print(f"📝 注入对话历史: {len(recent_history)}条")
     
     # 4. 获取上下文数据（记忆、待办、位置等）
     context = get_all_context(role_id=req.role_id)
@@ -915,13 +939,17 @@ async def generate_proactive(req: ProactiveRequest):
         active_id = get_behavior().get("current_active_role_id")
         role = next((r for r in roles if r.get("id") == active_id), roles[0])
     
-    # 环境数据
-    hr = (datetime.utcnow().hour + 8) % 24
+    # 环境数据（包含完整日期时间）
+    now = datetime.utcnow()
+    now_beijing = now + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    current_time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
+    
     gps = supabase.table("gps_history").select("address,battery").order("created_at", desc=True).limit(1).execute().data
     chats = supabase.table("chat_messages").select("content").order("created_at", desc=True).limit(10).execute().data or []
     persona = get_persona()
     
-    env = f"时间：{hr}点\n位置：{gps[0].get('address','未知') if gps else '未知'}"
+    env = f"当前时间：{current_time_str}\n位置：{gps[0].get('address','未知') if gps else '未知'}"
     chat_ctx = "\n".join([c["content"][:80] for c in chats]) or "无"
     extra = f"\n额外上下文：{req.context}" if req.context else ""
     
