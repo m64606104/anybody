@@ -481,17 +481,21 @@ AI_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_chat_history",
-            "description": "搜索用户的聊天记录和记忆。当用户询问'之前聊过什么'、'昨天说了什么'、'我们讨论过XX吗'等历史相关问题时，必须调用此工具。",
+            "description": "搜索用户的聊天记录和记忆全库。你可以通过此工具随时访问几年内的所有历史记录，没有任何条数限制。当你需要回忆、或者用户提及过去的事情时，必须主动使用此工具进行深度检索。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "keywords": {
                         "type": "string",
-                        "description": "搜索关键词，可以是人名、地点、事件、话题等"
+                        "description": "搜索关键词，可以是人名、地点、事件、话题等。如果不确定具体关键词，可以使用宽泛的词语，甚至为空字符串查最近记录。"
                     },
                     "date_filter": {
                         "type": "string",
-                        "description": "可选的日期过滤，格式如'2026-03-12'或'昨天'或'上周'"
+                        "description": "可选的日期过滤，格式如'2026-03-12'或'昨天'或'2025年'。如果用户指定了时间范围，请务必传入。"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "要返回的记录最大条数。如果你需要进行大范围排查，可以设置为 100 甚至 500。默认是 50。"
                     }
                 },
                 "required": ["keywords"]
@@ -925,8 +929,8 @@ async def get_all_chat_messages():
     """获取所有聊天的消息，按chat_id分组返回"""
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
-    # 获取最近1000条消息
-    r = supabase.table("chat_messages").select("*").order("created_at", desc=False).limit(1000).execute()
+    # 获取所有消息，增加 limit 上限以支持长历史加载
+    r = supabase.table("chat_messages").select("*").order("created_at", desc=False).limit(10000).execute()
     messages = r.data or []
     # 按chat_id分组
     grouped: dict = {}
