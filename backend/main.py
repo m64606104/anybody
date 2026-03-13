@@ -848,14 +848,16 @@ async def chat_send(req: ChatSendRequest):
                         # 执行工具
                         tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id)
                         
-                        # 添加工具结果
+                        # 添加工具结果 (必须包含 tool_call_id, role, name, content)
                         messages.append({
-                            "role": "tool",
                             "tool_call_id": tool_call["id"],
-                            "content": tool_result
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": str(tool_result) if tool_result else "无结果"
                         })
                     
-                    # 继续下一轮，让AI根据工具结果回复
+                    # 打印拼接好的消息列表用于调试
+                    print(f"🔧 工具执行完毕，准备第{round_num+2}轮对话。当前messages长度: {len(messages)}")
                     continue
                 else:
                     # 没有工具调用，获取最终回复
