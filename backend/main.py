@@ -498,10 +498,24 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 只获取最近少量历史（AI需要更多时用QUERY指令按需查询）
-    # 前端传来的history只取最近20条作为上下文
-    recent_history = req.history[-20:] if req.history else []
-    print(f"📝 最近历史: {len(recent_history)}条 (完整历史在user_sync，AI可用QUERY查询)")
+    # 3. 获取24小时内的聊天记录（默认只看最近24小时，需要更多时用QUERY查询）
+    recent_history = []
+    if req.history:
+        now = datetime.utcnow().timestamp() * 1000  # 毫秒时间戳
+        one_day_ago = now - 24 * 60 * 60 * 1000
+        for h in req.history:
+            created_at = h.get("createdAt") or h.get("created_at") or 0
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at.replace("Z", "")).timestamp() * 1000
+                except:
+                    created_at = 0
+            if created_at >= one_day_ago:
+                recent_history.append(h)
+        # 如果24小时内没有消息，至少保留最近10条
+        if not recent_history:
+            recent_history = req.history[-10:]
+    print(f"📝 24小时内历史: {len(recent_history)}条 (完整历史可用QUERY查询)")
     
     # 4. 获取上下文数据（记忆、待办、位置等）
     context = get_all_context(role_id=req.role_id)

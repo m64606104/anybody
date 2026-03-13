@@ -361,47 +361,162 @@ const App: React.FC = () => {
     void callModelForChat(chatId, history);
   };
 
-  // 独立的AI调用，通过后端API（支持Bark推送、消息存储）
+  // 独立的AI调用，直接调用AI API（旧版本方式，完整历史传给AI）
   const callModelForChat = async (chatId: string, history: Message[]) => {
-    const chat = chats.find((c) => c.id === chatId);
-    const role = roles.find((r) => r.id === chat?.roleId);
-    
-    // 获取最后一条用户消息
-    const lastUserMsg = history.filter(m => m.role === 'user').pop();
-    if (!lastUserMsg) {
-      pushAssistantChunkWithUnread(chatId, '没有找到用户消息');
+    if (!apiSettings.apiKey || !apiSettings.model || !apiSettings.baseUrl) {
+      pushAssistantChunkWithUnread(chatId, '请先在设置页配置 Base URL、API Key 和模型');
       setIsTyping(false);
       return;
     }
 
-    console.log('%c[DEBUG] 调用后端聊天API', 'color: #4ecdc4; font-weight: bold');
+    const chat = chats.find((c) => c.id === chatId);
+    const role = roles.find((r) => r.id === chat?.roleId);
+    const rolePrompt = buildRolePrompt(role);
+
+    // 🔄 自动查询最近记忆和用户状态，注入到AI上下文
+    let memoryContext = '';
+    let userStatusContext = '';
+    let screenCaptureContext = '';
+    
+    try {
+      // 按类型分别获取记忆（避免互相挤掉）
+      const memoriesResult = await getMemoriesByTypes(20, 50, 10);
+      
+      // 截屏数据（微信、美团、小红书、咸鱼等）
+      if (memoriesResult.screen_captures?.length) {
+        const captureList = memoriesResult.screen_captures
+          .map(m => {
+            const app = m.metadata?.app || '未知应用';
+            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
+            return `- [${app} ${time}] ${m.content.slice(0, 500)}`;
+          })
+          .join('\n');
+        screenCaptureContext = `\n## 用户最近的应用截屏内容\n${captureList}`;
+      }
+      
+      // GPS数据
+      if (memoriesResult.gps?.length) {
+        const gpsList = memoriesResult.gps
+          .map(m => {
+            const addr = m.metadata?.address || '未知位置';
+            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
+            return `- [${time}] ${addr}`;
+          })
+          .join('\n');
+        memoryContext += `\n## 用户最近的位置记录\n${gpsList}`;
+      }
+      
+      // 获取用户状态（位置、电量等）
+      const status = await getUserStatus();
+      if (status.location || status.battery) {
+        const parts = [];
+        if (status.location?.address) parts.push(`位置: ${status.location.address}`);
+        if (status.battery) parts.push(`电量: ${status.battery}%`);
+        if (status.last_active) parts.push(`最后活跃: ${new Date(status.last_active).toLocaleString('zh-CN')}`);
+        if (parts.length) {
+          userStatusContext = `\n## 用户当前状态\n${parts.join(' | ')}`;
+        }
+      }
+    } catch (e) {
+      console.warn('获取记忆/状态失败:', e);
+    }
+
+    const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 你的能力
+1. **记忆能力**：你可以访问用户记忆，下面会提供最近的记忆和截屏数据
+2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
+3. **日历事件**：你可以帮用户创建日程安排
+4. **记账**：你可以帮用户记录支出
+5. **联网搜索**：你可以搜索网络获取最新信息
+6. **查询记忆**：你可以搜索用户的历史记忆
+7. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
+
+## 特殊指令格式
+这些指令会被系统自动执行，**指令本身会被隐藏，用户看不到**。你可以自由使用。
+- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
+- 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
+- 记账：[EXPENSE:50|food|午餐]
+- 搜索网络：[SEARCH:查询内容]
+- 查询记忆：[QUERY:关键词]
+
+**注意：指令会被自动移除，用户只会看到你的自然语言回复。所以不要在回复中提及"我正在搜索"之类的话，直接给出结果即可。**
+${memoryContext}
+${screenCaptureContext}
+${userStatusContext}
+
+## 角色设定
+${rolePrompt || '（无特定角色设定）'}
+
+## 回复格式
+请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
+若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
+
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+    ];
+    
+    console.log('%c[DEBUG] callModelForChat - 发送给AI的消息', 'color: #4ecdc4; font-weight: bold');
     console.log('  chatId:', chatId);
-    console.log('  roleId:', role?.id);
+    console.log('  消息数量:', apiMessages.length);
     console.log('  历史条数:', history.length);
 
     try {
-      // 调用后端API，后端会：从user_sync读取完整历史、调用AI、存入数据库、推送Bark
-      const result = await sendChatMessage(
-        chatId,
-        lastUserMsg.content,
-        role?.id,
-        history.map(m => ({ role: m.role, content: m.content, createdAt: m.createdAt }))
-      );
+      const resp = await fetch(`${apiSettings.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiSettings.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: apiSettings.model,
+          messages: apiMessages,
+          response_format: { type: 'json_object' },
+        }),
+      });
 
-      console.log('%c[DEBUG] 后端返回', 'color: #6c5ce7; font-weight: bold');
-      console.log('  reply:', result.reply?.slice(0, 100));
-      console.log('  role_name:', result.role_name);
-
-      if (result.success && result.reply) {
-        pushAssistantChunkWithUnread(chatId, result.reply);
-      } else {
-        pushAssistantChunkWithUnread(chatId, '后端返回异常');
+      if (!resp.ok) {
+        const text = await resp.text();
+        pushAssistantChunkWithUnread(chatId, `调用失败：${resp.status} ${text}`);
+        setIsTyping(false);
+        return;
       }
+
+      const data = await resp.json();
+      const rawContent: string = data?.choices?.[0]?.message?.content ?? '';
+      
+      console.log('%c[DEBUG] AI回复', 'color: #6c5ce7; font-weight: bold');
+      console.log('  原始回复:', rawContent.slice(0, 200));
+      
+      let segments: string[] = [];
+      try {
+        const parsed = JSON.parse(rawContent);
+        if (parsed?.segments && Array.isArray(parsed.segments)) {
+          segments = parsed.segments.map((s: any) => String(s));
+        }
+      } catch (e) {
+        // ignore JSON parse error, fallback below
+      }
+
+      if (!segments.length) {
+        const text = rawContent || data?.choices?.[0]?.message?.content || '';
+        const sep = chatSettings.chunkSeparator || '<|chunk|>';
+        segments = text.split(sep).filter(Boolean);
+        if (!segments.length && text) segments = [text];
+      }
+
+      let delay = 200;
+      const totalDelay = delay + segments.length * chatSettings.chunkIntervalMs;
+      segments.forEach((chunk) => {
+        window.setTimeout(() => pushAssistantChunkWithUnread(chatId, chunk), delay);
+        delay += chatSettings.chunkIntervalMs;
+      });
+      window.setTimeout(() => setIsTyping(false), totalDelay);
     } catch (e: any) {
-      console.error('后端聊天失败:', e);
-      pushAssistantChunkWithUnread(chatId, `调用失败：${e?.message || e}`);
+      pushAssistantChunkWithUnread(chatId, `调用异常：${e?.message || e}`);
+      setIsTyping(false);
     }
-    setIsTyping(false);
   };
 
   // 已创建的指令缓存，避免重复执行
@@ -516,14 +631,15 @@ const App: React.FC = () => {
     updateMessages(chatId, (prev) => [...prev, message]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: cleanContent } : c)));
     
-    // 存储AI回复到记忆（异步，不阻塞）
+    // 同步AI回复到云端chat_messages表（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
-    storeMemory(cleanContent, 'chat', { 
-      chatId, 
+    syncMessage(chatId, {
       role: 'assistant',
-      roleName: role?.name || '未知角色'
-    }).catch(e => console.warn('存储记忆失败:', e));
+      content: cleanContent,
+      createdAt: message.createdAt,
+      role_id: role?.id
+    }).catch(e => console.warn('同步消息失败:', e));
     
     // 如果用户不在该聊天页，加入未读消息
     if (selectedChatId !== chatId || screen !== 'chat') {
@@ -555,19 +671,20 @@ const App: React.FC = () => {
     console.log('  用户消息:', userMsg);
     console.log('  当前缓冲区:', chatBuffers.current[chatId] || []);
     
-    // 存储用户消息到记忆（异步，不阻塞）
-    const chat = chats.find((c) => c.id === chatId);
-    const role = roles.find((r) => r.id === chat?.roleId);
-    storeMemory(userMsg, 'chat', { 
-      chatId, 
-      role: 'user',
-      roleName: role?.name || '未知角色'
-    }).catch(e => console.warn('存储记忆失败:', e));
-    
     // 立即显示用户消息
     const newMessage: Message = { id: uuid(), role: 'user', content: userMsg, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, newMessage]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: userMsg } : c)));
+    
+    // 同步用户消息到云端chat_messages表（异步，不阻塞）
+    const chat = chats.find((c) => c.id === chatId);
+    const role = roles.find((r) => r.id === chat?.roleId);
+    syncMessage(chatId, {
+      role: 'user',
+      content: userMsg,
+      createdAt: newMessage.createdAt,
+      role_id: role?.id
+    }).catch(e => console.warn('同步消息失败:', e));
     
     // 加入该聊天的缓冲区
     if (!chatBuffers.current[chatId]) {
