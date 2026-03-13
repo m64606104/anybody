@@ -924,7 +924,22 @@ async def bark_send(req: BarkRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no"}
+    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no", "version": "v20260313-full-context"}
+
+@app.get("/debug/prompt")
+async def debug_prompt(role_id: str = None):
+    """调试：返回实际发送给AI的系统提示词"""
+    context = get_all_context(role_id=role_id)
+    all_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(10).execute().data or [] if supabase else []
+    all_memories = supabase.table("memories").select("content,category,title").order("created_at", desc=True).limit(5).execute().data or [] if supabase else []
+    all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").limit(5).execute().data or [] if supabase else []
+    return {
+        "chat_count": len(all_chats),
+        "memory_count": len(all_memories),
+        "reminder_count": len(all_reminders),
+        "context_preview": context[:500],
+        "latest_chat": all_chats[0] if all_chats else None,
+    }
 
 if __name__ == "__main__":
     import uvicorn
