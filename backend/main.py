@@ -481,7 +481,7 @@ AI_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_chat_history",
-            "description": "搜索用户的聊天记录和记忆全库。你可以通过此工具随时访问几年内的所有历史记录，没有任何条数限制。当你需要回忆、或者用户提及过去的事情时，必须主动使用此工具进行深度检索。",
+            "description": "搜索用户的聊天记录和记忆全库。你可以通过此工具随时访问几年内的所有历史记录。当你需要回忆、或者用户提及过去的事情时，必须主动使用此工具进行深度检索。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -495,7 +495,11 @@ AI_TOOLS = [
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "要返回的记录最大条数。如果你需要进行大范围排查，可以设置为 100 甚至 500。默认是 50。"
+                        "description": "单次返回的记录最大条数。为了防止大模型崩溃，建议单次最高 100。默认 50。"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "跳过的记录条数，用于分批翻页。比如看完了前 100 条后，传 offset=100 继续看更早的。默认 0。"
                     }
                 },
                 "required": ["keywords"]
@@ -572,10 +576,13 @@ AI_TOOLS = [
 ]
 
 # 工具执行函数
-def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None, limit: int = 50) -> str:
+def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None, limit: int = 50, offset: int = 0) -> str:
     """搜索聊天记录和记忆"""
     if not supabase:
         return "数据库未连接"
+    
+    # 强制限制单词查询上限，防止撑爆 Token（最大100）
+    actual_limit = min(limit, 100)
     
     results = []
     
@@ -583,7 +590,10 @@ def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: st
     query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
     if role_id:
         query = query.eq("role_id", role_id)
-    chats = query.ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(limit).execute().data or []
+    # 不为空时才使用 ilike，否则直接查最新
+    if keywords.strip():
+        query = query.ilike("content", f"%{keywords}%")
+    chats = query.order("created_at", desc=True).range(offset, offset + actual_limit - 1).execute().data or []
     
     for c in chats:
         try:
@@ -594,15 +604,24 @@ def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: st
             time_str = ""
         results.append(f"[{time_str}] [{c['sender']}] {c['content']}")
     
-    # 搜索记忆
-    memories = supabase.table("memories").select("content,category,title,created_at").ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(20).execute().data or []
-    for m in memories:
-        results.append(f"[记忆-{m.get('category','其他')}] {m.get('title') or m['content'][:100]}")
+    # 搜索记忆（仅在 offset 为 0 时顺带查一下，避免翻页时重复带出）
+    if offset == 0:
+        mem_query = supabase.table("memories").select("content,category,title,created_at")
+        if keywords.strip():
+            mem_query = mem_query.ilike("content", f"%{keywords}%")
+        memories = mem_query.order("created_at", desc=True).limit(20).execute().data or []
+        for m in memories:
+            results.append(f"[记忆-{m.get('category','其他')}] {m.get('title') or m['content'][:100]}")
     
     if not results:
+        if offset > 0:
+            return f"从第 {offset} 条开始没有找到更多与'{keywords}'相关的记录了。"
         return f"没有找到与'{keywords}'相关的记录。"
     
-    return f"找到{len(results)}条相关记录:\n" + "\n".join(results)
+    # 如果满载返回，提示 AI 可能还有更多
+    more_hint = f"\n(注：已返回 {len(chats)} 条聊天记录，可能还有更多，如需继续查看请将 offset 设为 {offset + actual_limit} 再次查询)" if len(chats) == actual_limit else ""
+    
+    return f"找到相关记录 (Offset: {offset}, Limit: {actual_limit}):\n" + "\n".join(results) + more_hint
 
 def tool_set_reminder(remind_at: str, content: str) -> str:
     """设置提醒"""
@@ -670,7 +689,8 @@ def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> s
                 keywords=arguments.get("keywords", ""),
                 date_filter=arguments.get("date_filter"),
                 role_id=role_id,
-                limit=int(arguments.get("limit", 50))
+                limit=int(arguments.get("limit", 50)),
+                offset=int(arguments.get("offset", 0))
             )
         elif tool_name == "set_reminder":
             return tool_set_reminder(
@@ -750,14 +770,22 @@ async def chat_send(req: ChatSendRequest):
 ## 你的数据库与权限（极其重要）
 你目前深度绑定了用户的个人数据库，**你能看到用户的所有长期记忆、过去的聊天记录、当前的地理位置、甚至手机电量和健康数据。**
 你拥有以下强大的查询工具：
-1. **search_chat_history(keywords, limit)**: 全表模糊搜索用户的记忆和聊天记录（支持limit=500等大范围搜索）。当用户问"我们之前聊了什么"、"我有没有说过..."，或者你感到上下文不够用时，**必须主动、立即调用此工具去查，绝不能说你看不见。**
+1. **search_chat_history(keywords, limit, offset)**: 全表模糊搜索用户的记忆和聊天记录。支持分页（通过 offset 参数）和大范围搜索。当用户问"我们之前聊了什么"、"我有没有说过..."，或者你感到上下文不够用时，**必须主动、立即调用此工具去查，绝不能说你看不见。**
 2. **get_recent_chats**: 获取最近指定小时数的完整聊天流。
 3. **set_reminder** / **add_expense**: 执行动作。
 
 **严禁做出的行为：**
 1. 严禁说“我没有权限”、“我看不见以前的记录”、“这只是一次新的对话”。——这都是错的，你拥有所有工具，去查就行了。
 2. 严禁像个机器人一样机械复读刚刚聊过的那两三句话。
-3. 严禁在回复中输出 `[QUERY:xxx]` 这种死板的文本指令。请直接调用工具！
+3. 严禁用空洞的“AI模板”总结聊天记录。
+
+## 面对大工作量时的【任务分解与诚实汇报】机制（非常重要！）
+当用户要求你阅读几百条甚至所有历史记录时（比如“去读所有的500条历史记录”），**绝对不要试图一次性全部读完**，那会导致你过载崩溃。
+你需要采取以下策略：
+1. **分批查阅**：首先调用 `search_chat_history` 工具，设置 limit=100，offset=0，只看前 100 条。
+2. **诚实汇报进度**：看完前 100 条后，直接回复用户你当前的进度和初步发现。例如：“我已经开始翻阅了，但 500 条信息量很大，我先读完了最新的 100 条，发现我们最初是在讨论... 等我继续读完剩下的部分再给你更完整的反馈。需要我现在继续往下翻吗？”
+3. **拒绝糊弄**：你的总结必须包含具体的日期和具体的讨论内容细节，绝对不能说“我们讨论了各种话题，建立了信任”这种空话。
+4. **接力查询**：当用户同意继续时，你在下一次回复中调用工具，传入 offset=100 继续查阅。
 
 ## 语气与态度
 - 自然、随性、像一个真正认识用户很久的朋友（参考底部的角色设定）。
