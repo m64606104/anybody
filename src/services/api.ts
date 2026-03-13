@@ -83,6 +83,25 @@ export async function getRecentMemories(limit = 10): Promise<{ memories: Memory[
 }
 
 /**
+ * 按类型分别获取记忆（避免互相挤掉）
+ */
+export async function getMemoriesByTypes(
+  chatLimit = 5,
+  captureLimit = 3,
+  gpsLimit = 2
+): Promise<{
+  chats: Memory[];
+  screen_captures: Memory[];
+  gps: Memory[];
+}> {
+  const resp = await fetch(
+    `${API_BASE_URL}/memory/by_types?chat_limit=${chatLimit}&capture_limit=${captureLimit}&gps_limit=${gpsLimit}`
+  );
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+/**
  * 获取最新GPS位置
  */
 export async function getLatestGPS(): Promise<{

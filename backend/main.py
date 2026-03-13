@@ -929,16 +929,66 @@ async def health():
 @app.get("/debug/prompt")
 async def debug_prompt(role_id: str = None):
     """调试：返回实际发送给AI的系统提示词"""
+    if not supabase:
+        return {"error": "no supabase"}
+    all_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(500).execute().data or []
+    all_memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(200).execute().data or []
+    all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").execute().data or []
+    
+    roles = get_all_roles()
+    role = next((r for r in roles if r.get("id") == role_id), None) if role_id else (roles[0] if roles else None)
+    role_prompt = build_role_prompt(role) if role else ""
+    role_name = role.get("name", "AI") if role else "AI"
     context = get_all_context(role_id=role_id)
-    all_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(10).execute().data or [] if supabase else []
-    all_memories = supabase.table("memories").select("content,category,title").order("created_at", desc=True).limit(5).execute().data or [] if supabase else []
-    all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").limit(5).execute().data or [] if supabase else []
+    
+    chat_lines = []
+    for c in reversed(all_chats):
+        try:
+            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+            t_beijing = t + timedelta(hours=8)
+            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+        except:
+            time_str = ""
+        chat_lines.append(f"[{time_str}] [{c['sender']}] {c['content'][:200]}")
+    
+    mem_lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:150]}" for m in all_memories]
+    todo_lines = [f"- {'✅' if t.get('is_done') else '⏰'} {t['content']} ({t['remind_at']})" for t in all_reminders]
+    
+    chat_context = "\n".join(chat_lines) if chat_lines else "无"
+    memory_context = "\n".join(mem_lines) if mem_lines else "无"
+    reminder_context = "\n".join(todo_lines) if todo_lines else "无"
+    
+    system_prompt = f"""你是用户的AI助手，拥有以下能力：
+
+## 你的能力
+1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供完整的记忆
+2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
+3. **记账**：你可以帮用户记录支出
+4. **查询记忆**：你可以搜索用户的历史记忆和聊天记录
+5. **位置感知**：你知道用户当前的位置、电量等状态
+
+## 完整聊天记录（{len(all_chats)}条）
+{chat_context}
+
+## 完整记忆库（{len(all_memories)}条）
+{memory_context}
+
+## 完整待办事项（{len(all_reminders)}条）
+{reminder_context}
+
+{context}
+
+## 角色设定
+{role_prompt or '（无特定角色设定）'}"""
+    
     return {
         "chat_count": len(all_chats),
         "memory_count": len(all_memories),
         "reminder_count": len(all_reminders),
-        "context_preview": context[:500],
-        "latest_chat": all_chats[0] if all_chats else None,
+        "role_name": role_name,
+        "role_prompt_preview": role_prompt[:300] if role_prompt else "(empty)",
+        "system_prompt_length": len(system_prompt),
+        "system_prompt_preview": system_prompt[:2000],
     }
 
 if __name__ == "__main__":
