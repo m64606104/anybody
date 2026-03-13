@@ -479,7 +479,7 @@ async def chat_send(req: ChatSendRequest):
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 1. 存储用户消息
+    # 1. 存储用户消息到chat_messages
     supabase.table("chat_messages").insert({
         "chat_id": req.chat_id,
         "role_id": req.role_id,
@@ -498,69 +498,95 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取基础上下文（不包含大量聊天记录，AI可以自己查询）
+    # 3. 从user_sync获取完整聊天历史（这是前端同步的完整数据）
+    full_history = []
+    try:
+        sync_data = supabase.table("user_sync").select("messages").eq("user_id", "default_user").limit(1).execute()
+        if sync_data.data and sync_data.data[0].get("messages"):
+            all_messages = sync_data.data[0]["messages"]
+            # 获取当前chat_id的消息
+            chat_messages = all_messages.get(req.chat_id, [])
+            print(f"📝 从user_sync获取到 {len(chat_messages)} 条历史消息")
+            full_history = chat_messages
+    except Exception as e:
+        print(f"⚠️ 获取user_sync失败: {e}")
+    
+    # 如果user_sync没有数据，使用前端传来的history
+    if not full_history and req.history:
+        full_history = req.history
+        print(f"📝 使用前端传来的 {len(full_history)} 条历史消息")
+    
+    # 4. 获取上下文数据（记忆、待办、位置等）
     context = get_all_context(role_id=req.role_id)
     
-    # 4. 获取完整数据（不限制数量）
-    # 完整聊天记录
-    all_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(500).execute().data or []
-    chat_lines = []
-    for c in reversed(all_chats):
-        try:
-            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
-            t_beijing = t + timedelta(hours=8)
-            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
-        except:
-            time_str = ""
-        chat_lines.append(f"[{time_str}] [{c['sender']}] {c['content'][:200]}")
-    chat_context = "\n".join(chat_lines) if chat_lines else "无"
-    
-    # 完整记忆库
-    all_memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(200).execute().data or []
-    mem_lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:150]}" for m in all_memories]
+    # 获取记忆库摘要
+    all_memories = supabase.table("memories").select("content,category,title").order("created_at", desc=True).limit(50).execute().data or []
+    mem_lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in all_memories]
     memory_context = "\n".join(mem_lines) if mem_lines else "无"
     
-    # 完整待办事项
-    all_reminders = supabase.table("reminders").select("content,remind_at,repeat,is_done").order("remind_at").execute().data or []
+    # 获取待办事项
+    all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").execute().data or []
     todo_lines = [f"- {'✅' if t.get('is_done') else '⏰'} {t['content']} ({t['remind_at']})" for t in all_reminders]
     reminder_context = "\n".join(todo_lines) if todo_lines else "无"
     
-    # 5. 构建系统提示词（采用之前版本的风格）
+    # 5. 构建系统提示词（简洁版，历史放在messages数组里）
     system_prompt = f"""你是用户的AI助手，拥有以下能力：
 
 ## 你的能力
-1. **记忆能力**：你可以访问Supabase中存储的用户记忆，下面会提供完整的记忆
-2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
+1. **记忆能力**：你可以访问用户的记忆库
+2. **闹钟提醒**：你可以帮用户设置闹钟
 3. **记账**：你可以帮用户记录支出
-4. **查询记忆**：你可以搜索用户的历史记忆和聊天记录
+4. **联网搜索**：你可以搜索网络
 5. **位置感知**：你知道用户当前的位置、电量等状态
 
-## 特殊指令格式（在回复中使用，系统会自动执行）
+## 特殊指令格式（在回复中使用，系统会自动执行，用户看不到）
 - 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
 - 记账：[EXPENSE:50|food|午餐]
+- 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
 
-## 完整聊天记录（{len(all_chats)}条）
-{chat_context}
-
-## 完整记忆库（{len(all_memories)}条）
+## 记忆库摘要（{len(all_memories)}条）
 {memory_context}
 
-## 完整待办事项（{len(all_reminders)}条）
+## 待办事项（{len(all_reminders)}条）
 {reminder_context}
 
 {context}
 
 ## 角色设定
-{role_prompt or '（无特定角色设定）'}
+{role_prompt or '（无特定角色设定）'}"""
 
-请基于上面的完整数据回复用户。"""
-
-    # 6. 构建消息历史（支持图片识别）
+    # 6. 构建消息数组（历史作为messages传给AI，而不是放在system prompt里）
+    def format_time(ts):
+        """格式化时间戳，区分今天/昨天"""
+        if not ts:
+            return ""
+        try:
+            if isinstance(ts, (int, float)):
+                d = datetime.fromtimestamp(ts / 1000) + timedelta(hours=8)  # 前端是毫秒时间戳
+            else:
+                d = datetime.fromisoformat(str(ts).replace("Z", "")) + timedelta(hours=8)
+            now = datetime.utcnow() + timedelta(hours=8)
+            if d.date() == now.date():
+                return f"今天 {d.strftime('%H:%M')}"
+            elif d.date() == (now - timedelta(days=1)).date():
+                return f"昨天 {d.strftime('%H:%M')}"
+            else:
+                return d.strftime("%m/%d %H:%M")
+        except:
+            return ""
+    
     messages = [{"role": "system", "content": system_prompt}]
-    if req.history:
-        for h in req.history[-20:]:
-            messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
+    
+    # 添加完整历史（带时间戳）
+    for h in full_history:
+        role = h.get("role", "user")
+        content = h.get("content", "")
+        created_at = h.get("createdAt") or h.get("created_at")
+        time_str = format_time(created_at)
+        if time_str:
+            content = f"[{time_str}] {content}"
+        messages.append({"role": role, "content": content})
     
     # 检查用户消息是否包含图片
     import re
