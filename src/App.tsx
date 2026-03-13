@@ -452,10 +452,29 @@ ${rolePrompt || '（无特定角色设定）'}
 请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
 若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
+    // 限制历史：24小时内或最多200条，过滤图片base64
+    const now = Date.now();
+    const oneDayAgo = now - 24 * 60 * 60 * 1000;
+    let limitedHistory = history.filter(m => m.createdAt >= oneDayAgo);
+    // 如果24小时内不足10条，至少保留最近10条
+    if (limitedHistory.length < 10) {
+      limitedHistory = history.slice(-10);
+    }
+    // 最多200条
+    if (limitedHistory.length > 200) {
+      limitedHistory = limitedHistory.slice(-200);
+    }
+    
+    const imgPattern = /<img[^>]+src="data:image\/[^"]+"/g;
     const apiMessages = [
       { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({ role: m.role, content: m.content })),
+      ...limitedHistory.map((m) => ({ 
+        role: m.role, 
+        content: m.content.replace(imgPattern, '[图片]') 
+      })),
     ];
+    
+    console.log(`📝 历史限制: 原${history.length}条 → ${limitedHistory.length}条 (24小时内或最多200条)`);
     
     console.log('%c[DEBUG] callModelForChat - 发送给AI的消息', 'color: #4ecdc4; font-weight: bold');
     console.log('  chatId:', chatId);
@@ -631,15 +650,28 @@ ${rolePrompt || '（无特定角色设定）'}
     updateMessages(chatId, (prev) => [...prev, message]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: cleanContent } : c)));
     
-    // 同步AI回复到云端chat_messages表（异步，不阻塞）
+    // 同步AI回复到云端chat_messages表 + 推送Bark（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
+    const roleName = role?.name || 'AI';
+    
     syncMessage(chatId, {
       role: 'assistant',
       content: cleanContent,
       createdAt: message.createdAt,
       role_id: role?.id
     }).catch(e => console.warn('同步消息失败:', e));
+    
+    // 推送Bark通知
+    fetch(`${import.meta.env.VITE_API_BASE_URL || 'https://anybody.onrender.com'}/bark/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: roleName,
+        body: cleanContent.slice(0, 100) + (cleanContent.length > 100 ? '...' : ''),
+        group: roleName
+      })
+    }).catch(e => console.warn('Bark推送失败:', e));
     
     // 如果用户不在该聊天页，加入未读消息
     if (selectedChatId !== chatId || screen !== 'chat') {
