@@ -498,23 +498,10 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 从user_sync获取完整聊天历史（这是前端同步的完整数据）
-    full_history = []
-    try:
-        sync_data = supabase.table("user_sync").select("messages").eq("user_id", "default_user").limit(1).execute()
-        if sync_data.data and sync_data.data[0].get("messages"):
-            all_messages = sync_data.data[0]["messages"]
-            # 获取当前chat_id的消息
-            chat_messages = all_messages.get(req.chat_id, [])
-            print(f"📝 从user_sync获取到 {len(chat_messages)} 条历史消息")
-            full_history = chat_messages
-    except Exception as e:
-        print(f"⚠️ 获取user_sync失败: {e}")
-    
-    # 如果user_sync没有数据，使用前端传来的history
-    if not full_history and req.history:
-        full_history = req.history
-        print(f"📝 使用前端传来的 {len(full_history)} 条历史消息")
+    # 3. 只获取最近少量历史（AI需要更多时用QUERY指令按需查询）
+    # 前端传来的history只取最近20条作为上下文
+    recent_history = req.history[-20:] if req.history else []
+    print(f"📝 最近历史: {len(recent_history)}条 (完整历史在user_sync，AI可用QUERY查询)")
     
     # 4. 获取上下文数据（记忆、待办、位置等）
     context = get_all_context(role_id=req.role_id)
@@ -578,20 +565,22 @@ async def chat_send(req: ChatSendRequest):
     
     messages = [{"role": "system", "content": system_prompt}]
     
-    # 添加完整历史（带时间戳）
-    for h in full_history:
+    # 检查用户消息是否包含图片
+    import re
+    img_pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>'
+    img_matches = re.findall(img_pattern, req.message)
+    
+    # 添加最近历史（带时间戳，过滤掉图片base64）
+    for h in recent_history:
         role = h.get("role", "user")
         content = h.get("content", "")
+        # 移除历史消息中的图片base64
+        content = re.sub(img_pattern, '[图片]', content)
         created_at = h.get("createdAt") or h.get("created_at")
         time_str = format_time(created_at)
         if time_str:
             content = f"[{time_str}] {content}"
         messages.append({"role": role, "content": content})
-    
-    # 检查用户消息是否包含图片
-    import re
-    img_pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>'
-    img_matches = re.findall(img_pattern, req.message)
     
     if img_matches:
         content_parts = []
@@ -604,21 +593,68 @@ async def chat_send(req: ChatSendRequest):
     else:
         messages.append({"role": "user", "content": req.message})
     
-    # 5. 调用AI（简单调用，不使用Function Calling）
+    # 5. 调用AI（支持两轮对话：如果AI输出QUERY指令，执行查询后再让AI回复）
     model = "gpt-4o" if img_matches else OPENAI_MODEL
     ai_reply = ""
     
-    try:
+    async def call_ai(msgs):
         async with httpx.AsyncClient() as c:
             resp = await c.post(
                 f"{OPENAI_BASE_URL}/chat/completions",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"model": model, "messages": messages, "max_tokens": 4096},
+                json={"model": model, "messages": msgs, "max_tokens": 4096},
                 timeout=120.0
             )
             if resp.status_code != 200:
                 raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
-            ai_reply = resp.json()["choices"][0]["message"].get("content", "")
+            return resp.json()["choices"][0]["message"].get("content", "")
+    
+    try:
+        # 第一轮：AI可能输出QUERY指令
+        ai_reply = await call_ai(messages)
+        
+        # 检查是否有QUERY指令需要执行
+        query_match = re.search(r'\[QUERY:([^\]]+)\]', ai_reply)
+        if query_match:
+            keyword = query_match.group(1)
+            print(f"🔍 AI请求查询: {keyword}")
+            
+            # 执行查询：从user_sync获取完整历史并搜索
+            query_results = []
+            try:
+                sync_data = supabase.table("user_sync").select("messages").eq("user_id", "default_user").limit(1).execute()
+                if sync_data.data and sync_data.data[0].get("messages"):
+                    all_messages = sync_data.data[0]["messages"]
+                    chat_messages = all_messages.get(req.chat_id, [])
+                    # 搜索包含关键词的消息
+                    for m in chat_messages:
+                        content = m.get("content", "")
+                        if keyword.lower() in content.lower():
+                            created_at = m.get("createdAt") or m.get("created_at")
+                            time_str = format_time(created_at) if created_at else ""
+                            query_results.append(f"[{time_str}] [{m.get('role')}] {content[:200]}")
+                    # 也搜索memories表
+                    mem_results = supabase.table("memories").select("content,category,created_at").ilike("content", f"%{keyword}%").limit(10).execute().data or []
+                    for m in mem_results:
+                        query_results.append(f"[记忆/{m.get('category')}] {m['content'][:200]}")
+            except Exception as e:
+                print(f"⚠️ 查询失败: {e}")
+            
+            # 第二轮：把查询结果注入，让AI重新回复
+            if query_results:
+                result_text = "\n".join(query_results[:20])  # 最多20条结果
+                messages.append({"role": "assistant", "content": ai_reply})
+                messages.append({"role": "user", "content": f"[系统] 查询结果({len(query_results)}条):\n{result_text}\n\n请根据以上查询结果回答用户的问题。"})
+                ai_reply = await call_ai(messages)
+                print(f"🔍 查询到 {len(query_results)} 条结果，AI已重新回复")
+            else:
+                # 没有结果，让AI知道
+                messages.append({"role": "assistant", "content": ai_reply})
+                messages.append({"role": "user", "content": f"[系统] 没有找到与'{keyword}'相关的记录。请告诉用户没有找到相关信息。"})
+                ai_reply = await call_ai(messages)
+        
+        # 移除QUERY指令（用户不需要看到）
+        ai_reply = re.sub(r'\[QUERY:[^\]]+\]', '', ai_reply).strip()
     except Exception as e:
         ai_reply = f"调用AI失败：{str(e)}"
         print(f"❌ AI调用错误: {e}")
