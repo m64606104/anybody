@@ -744,13 +744,14 @@ async def chat_send(req: ChatSendRequest):
 
 ## 重要：你拥有数据库访问权限
 你现在连接了Supabase数据库，拥有以下工具：
-1. **search_chat_history** - 搜索聊天记录和记忆。当用户问"之前聊过什么"、"昨天说了什么"、"我们讨论过XX吗"等问题时，**必须调用此工具**。
+1. **search_chat_history** - 搜索聊天记录和记忆。当用户问"之前聊过什么"、"昨天说了什么"、"我们讨论过XX吗"等问题时，**必须直接调用此工具**。
 2. **get_recent_chats** - 获取最近的聊天记录。
 3. **set_reminder** - 设置闹钟提醒。
 4. **add_expense** - 记账。
 
 **禁止回复"我没有权限访问数据库"或"我无法查看聊天记录"。**
-当用户询问过去的事情时，请务必先调用search_chat_history工具查询后再回答。
+当用户询问过去的事情时，请务必先调用 `search_chat_history` 工具查询后再回答。
+**注意：不要在回复中写类似 `[QUERY:xxx]`、`[REMINDER:xxx]` 的文本指令，请直接使用提供的 Function Calling 工具。**
 
 ## 回复格式
 - 普通对话：直接用自然语言回复
