@@ -829,13 +829,9 @@ async def chat_send(req: ChatSendRequest):
                 # 检查是否有工具调用
                 if message.get("tool_calls"):
                     print(f"🔧 第{round_num+1}轮: AI请求调用工具: {[tc['function']['name'] for tc in message['tool_calls']]}")
-                    # 添加AI的工具调用消息（需要包含content字段，即使为null）
-                    tool_call_message = {
-                        "role": "assistant",
-                        "content": message.get("content"),  # 可能为null
-                        "tool_calls": message["tool_calls"]
-                    }
-                    messages.append(tool_call_message)
+                    
+                    # 收集所有工具执行的结果
+                    tool_results_text = []
                     
                     # 执行每个工具调用
                     for tool_call in message["tool_calls"]:
@@ -847,17 +843,23 @@ async def chat_send(req: ChatSendRequest):
                         
                         # 执行工具
                         tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id)
-                        
-                        # 添加工具结果 (必须包含 tool_call_id, role, name, content)
-                        messages.append({
-                            "tool_call_id": tool_call["id"],
-                            "role": "tool",
-                            "name": tool_name,
-                            "content": str(tool_result) if tool_result else "无结果"
-                        })
+                        tool_results_text.append(f"【工具 {tool_name} 执行结果】:\n{tool_result}")
+                    
+                    # 使用 Fallback 策略：因为代理 API 可能不支持标准的 tool_call 第二轮上下文拼接
+                    # 我们不把 message 本身和 role: tool 放进去，而是直接注入一条系统提示
+                    combined_results = "\n\n".join(tool_results_text)
+                    messages.append({
+                        "role": "system",
+                        "content": f"系统后台刚刚执行了你的查询请求，以下是查询结果：\n\n{combined_results}\n\n请结合以上真实数据，直接用自然语言回答用户的上一条问题。不要再次调用工具。"
+                    })
                     
                     # 打印拼接好的消息列表用于调试
-                    print(f"🔧 工具执行完毕，准备第{round_num+2}轮对话。当前messages长度: {len(messages)}")
+                    print(f"🔧 工具执行完毕，使用 Fallback 策略准备第{round_num+2}轮对话。")
+                    
+                    # 关键：移除工具，强制 AI 在下一轮直接回答
+                    request_body.pop("tools", None)
+                    request_body.pop("tool_choice", None)
+                    
                     continue
                 else:
                     # 没有工具调用，获取最终回复
