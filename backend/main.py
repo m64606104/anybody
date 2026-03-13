@@ -818,14 +818,20 @@ async def chat_send(req: ChatSendRequest):
                     raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
                 
                 response_data = resp.json()
+                print(f"🤖 AI响应: {json.dumps(response_data.get('choices', [{}])[0].get('finish_reason'), ensure_ascii=False)}")
                 choice = response_data["choices"][0]
                 message = choice["message"]
                 
                 # 检查是否有工具调用
                 if message.get("tool_calls"):
-                    print(f"� 第{round_num+1}轮: AI请求调用工具")
-                    # 添加AI的工具调用消息
-                    messages.append(message)
+                    print(f"🔧 第{round_num+1}轮: AI请求调用工具: {[tc['function']['name'] for tc in message['tool_calls']]}")
+                    # 添加AI的工具调用消息（需要包含content字段，即使为null）
+                    tool_call_message = {
+                        "role": "assistant",
+                        "content": message.get("content"),  # 可能为null
+                        "tool_calls": message["tool_calls"]
+                    }
+                    messages.append(tool_call_message)
                     
                     # 执行每个工具调用
                     for tool_call in message["tool_calls"]:
