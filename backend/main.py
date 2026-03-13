@@ -471,6 +471,221 @@ async def recent_memories(limit: int = 10):
     r = supabase.table("memories").select("*").order("created_at", desc=True).limit(limit).execute()
     return {"memories": r.data or []}
 
+# ============ OpenAI Function Calling 工具定义 ============
+import re
+import json
+
+# 定义AI可用的工具（OpenAI Function Calling格式）
+AI_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_chat_history",
+            "description": "搜索用户的聊天记录和记忆。当用户询问'之前聊过什么'、'昨天说了什么'、'我们讨论过XX吗'等历史相关问题时，必须调用此工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "string",
+                        "description": "搜索关键词，可以是人名、地点、事件、话题等"
+                    },
+                    "date_filter": {
+                        "type": "string",
+                        "description": "可选的日期过滤，格式如'2026-03-12'或'昨天'或'上周'"
+                    }
+                },
+                "required": ["keywords"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": "为用户设置闹钟或提醒。当用户说'提醒我'、'设个闹钟'、'XX点叫我'等时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "remind_at": {
+                        "type": "string",
+                        "description": "提醒时间，ISO格式如'2026-03-14T08:00:00'"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "提醒内容"
+                    }
+                },
+                "required": ["remind_at", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_expense",
+            "description": "记录用户的支出。当用户说'记账'、'花了XX钱'、'买了XX'等时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {
+                        "type": "number",
+                        "description": "金额（人民币）"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "分类，如food/transport/shopping/entertainment等"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "描述"
+                    }
+                },
+                "required": ["amount", "category", "description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_chats",
+            "description": "获取最近的聊天记录。当需要回顾近期对话内容时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours": {
+                        "type": "integer",
+                        "description": "获取最近多少小时的记录，默认24"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "最多返回多少条，默认50"
+                    }
+                },
+                "required": []
+            }
+        }
+    }
+]
+
+# 工具执行函数
+def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None) -> str:
+    """搜索聊天记录和记忆"""
+    if not supabase:
+        return "数据库未连接"
+    
+    results = []
+    
+    # 搜索聊天记录
+    query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
+    if role_id:
+        query = query.eq("role_id", role_id)
+    chats = query.ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(30).execute().data or []
+    
+    for c in chats:
+        try:
+            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+            t_beijing = t + timedelta(hours=8)
+            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+        except:
+            time_str = ""
+        results.append(f"[{time_str}] [{c['sender']}] {c['content'][:150]}")
+    
+    # 搜索记忆
+    memories = supabase.table("memories").select("content,category,title,created_at").ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(10).execute().data or []
+    for m in memories:
+        results.append(f"[记忆-{m.get('category','其他')}] {m.get('title') or m['content'][:100]}")
+    
+    if not results:
+        return f"没有找到与'{keywords}'相关的记录。"
+    
+    return f"找到{len(results)}条相关记录:\n" + "\n".join(results)
+
+def tool_set_reminder(remind_at: str, content: str) -> str:
+    """设置提醒"""
+    if not supabase:
+        return "数据库未连接"
+    try:
+        supabase.table("reminders").insert({
+            "content": content,
+            "remind_at": remind_at,
+            "is_done": False,
+            "is_pushed": False
+        }).execute()
+        return f"已设置提醒：{content}，时间：{remind_at}"
+    except Exception as e:
+        return f"设置提醒失败：{str(e)}"
+
+def tool_add_expense(amount: float, category: str, description: str) -> str:
+    """记账"""
+    if not supabase:
+        return "数据库未连接"
+    try:
+        supabase.table("expenses").insert({
+            "amount": amount,
+            "category": category,
+            "description": description,
+            "date": datetime.utcnow().strftime("%Y-%m-%d")
+        }).execute()
+        return f"已记录支出：¥{amount} {category} {description}"
+    except Exception as e:
+        return f"记账失败：{str(e)}"
+
+def tool_get_recent_chats(hours: int = 24, limit: int = 50, role_id: str = None) -> str:
+    """获取最近聊天记录"""
+    if not supabase:
+        return "数据库未连接"
+    
+    since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    query = supabase.table("chat_messages").select("sender,content,created_at")
+    if role_id:
+        query = query.eq("role_id", role_id)
+    chats = query.gte("created_at", since).order("created_at", desc=True).limit(limit).execute().data or []
+    
+    if not chats:
+        return f"最近{hours}小时没有聊天记录。"
+    
+    results = []
+    for c in reversed(chats):
+        try:
+            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+            t_beijing = t + timedelta(hours=8)
+            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+        except:
+            time_str = ""
+        results.append(f"[{time_str}] [{c['sender']}] {c['content'][:100]}")
+    
+    return f"最近{hours}小时的{len(results)}条聊天记录:\n" + "\n".join(results)
+
+def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> str:
+    """执行工具调用"""
+    print(f"🔧 执行工具: {tool_name}, 参数: {arguments}")
+    
+    if tool_name == "search_chat_history":
+        return tool_search_chat_history(
+            keywords=arguments.get("keywords", ""),
+            date_filter=arguments.get("date_filter"),
+            role_id=role_id
+        )
+    elif tool_name == "set_reminder":
+        return tool_set_reminder(
+            remind_at=arguments.get("remind_at", ""),
+            content=arguments.get("content", "")
+        )
+    elif tool_name == "add_expense":
+        return tool_add_expense(
+            amount=float(arguments.get("amount", 0)),
+            category=arguments.get("category", "other"),
+            description=arguments.get("description", "")
+        )
+    elif tool_name == "get_recent_chats":
+        return tool_get_recent_chats(
+            hours=int(arguments.get("hours", 24)),
+            limit=int(arguments.get("limit", 50)),
+            role_id=role_id
+        )
+    else:
+        return f"未知工具: {tool_name}"
+
 # ============ 后端聊天（核心功能）============
 class ChatSendRequest(BaseModel):
     chat_id: str
@@ -481,13 +696,13 @@ class ChatSendRequest(BaseModel):
 @app.post("/chat/send")
 async def chat_send(req: ChatSendRequest):
     """
-    后端聊天：接收用户消息 -> 调用AI -> 存入数据库 -> 推送Bark
-    用户发完消息可以离开页面，AI回复会自动推送到手机
+    后端聊天：使用OpenAI Function Calling实现工具调用
+    AI可以主动调用search_chat_history等工具查询数据库
     """
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
-    # 1. 存储用户消息到chat_messages
+    # 1. 存储用户消息
     supabase.table("chat_messages").insert({
         "chat_id": req.chat_id,
         "role_id": req.role_id,
@@ -506,119 +721,63 @@ async def chat_send(req: ChatSendRequest):
     role_prompt = build_role_prompt(role) if role else ""
     role_name = role.get("name", "AI") if role else "AI"
     
-    # 3. 获取最近的聊天记录作为对话历史
-    recent_history = []
+    # 3. 获取最近20条聊天记录作为短期上下文
+    recent_chats = supabase.table("chat_messages").select("sender,content,created_at").eq("chat_id", req.chat_id).order("created_at", desc=True).limit(20).execute().data or []
     
-    # 策略：优先使用前端传来的历史，放宽到72小时
-    if req.history:
-        now_ts = datetime.utcnow().timestamp() * 1000  # 毫秒时间戳
-        three_days_ago = now_ts - 72 * 60 * 60 * 1000  # 72小时
-        for h in req.history:
-            created_at = h.get("createdAt") or h.get("created_at") or 0
-            if isinstance(created_at, str):
-                try:
-                    created_at = datetime.fromisoformat(created_at.replace("Z", "")).timestamp() * 1000
-                except:
-                    created_at = 0
-            if created_at >= three_days_ago:
-                recent_history.append(h)
-        # 如果72小时内没有消息，至少保留最近10条
-        if not recent_history:
-            recent_history = req.history[-10:]
-            
-    # 如果前端没有传历史，或者历史太少（比如刚刷新页面），从数据库兜底获取
-    if len(recent_history) <= 1 and supabase:
-        print("⚠️ 前端历史记录为空或太少，从数据库获取最近50条历史兜底...")
-        db_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(50).execute().data or []
-        db_history = []
-        for c in reversed(db_chats):
-            db_history.append({
-                "role": "assistant" if c["sender"] == "assistant" else "user",
-                "content": c["content"],
-                "created_at": c["created_at"]
-            })
-        recent_history = db_history
-        
-    print(f"📝 注入对话历史: {len(recent_history)}条")
-    
-    # 4. 获取上下文数据（记忆、待办、位置等）
+    # 4. 获取基础上下文（位置、健康等）
     context = get_all_context(role_id=req.role_id)
     
-    # 获取记忆库摘要
-    all_memories = supabase.table("memories").select("content,category,title").order("created_at", desc=True).limit(50).execute().data or []
-    mem_lines = [f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in all_memories]
-    memory_context = "\n".join(mem_lines) if mem_lines else "无"
+    # 5. 获取待办事项
+    reminders = supabase.table("reminders").select("content,remind_at").eq("is_done", False).order("remind_at").limit(10).execute().data or []
+    reminder_list = "\n".join([f"- {r['content']} ({r['remind_at']})" for r in reminders]) if reminders else "无"
     
-    # 获取待办事项
-    all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").execute().data or []
-    todo_lines = [f"- {'✅' if t.get('is_done') else '⏰'} {t['content']} ({t['remind_at']})" for t in all_reminders]
-    reminder_context = "\n".join(todo_lines) if todo_lines else "无"
+    # 6. 构建系统提示词（强调工具使用）
+    now_beijing = datetime.utcnow() + timedelta(hours=8)
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    current_time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
     
-    # 5. 构建系统提示词（简洁版，历史放在messages数组里）
-    system_prompt = f"""你是用户的AI助手，拥有以下能力：
+    system_prompt = f"""你是用户的AI助手。当前时间：{current_time_str}
 
-## 你的能力
-1. **记忆能力**：你可以访问用户的记忆库
-2. **闹钟提醒**：你可以帮用户设置闹钟
-3. **记账**：你可以帮用户记录支出
-4. **联网搜索**：你可以搜索网络
-5. **位置感知**：你知道用户当前的位置、电量等状态
+## 重要：你拥有数据库访问权限
+你现在连接了Supabase数据库，拥有以下工具：
+1. **search_chat_history** - 搜索聊天记录和记忆。当用户问"之前聊过什么"、"昨天说了什么"、"我们讨论过XX吗"等问题时，**必须调用此工具**。
+2. **get_recent_chats** - 获取最近的聊天记录。
+3. **set_reminder** - 设置闹钟提醒。
+4. **add_expense** - 记账。
 
-## 特殊指令格式（在回复中使用，系统会自动执行，用户看不到）
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
-- 记账：[EXPENSE:50|food|午餐]
-- 搜索网络：[SEARCH:查询内容]
-- 查询记忆：[QUERY:关键词]
+**禁止回复"我没有权限访问数据库"或"我无法查看聊天记录"。**
+当用户询问过去的事情时，请务必先调用search_chat_history工具查询后再回答。
 
-## 记忆库摘要（{len(all_memories)}条）
-{memory_context}
+## 回复格式
+- 普通对话：直接用自然语言回复
+- 代码/HTML：使用markdown代码块格式
 
-## 待办事项（{len(all_reminders)}条）
-{reminder_context}
+## 当前待办事项
+{reminder_list}
 
 {context}
 
 ## 角色设定
 {role_prompt or '（无特定角色设定）'}"""
 
-    # 6. 构建消息数组（历史作为messages传给AI，而不是放在system prompt里）
-    def format_time(ts):
-        """格式化时间戳，区分今天/昨天"""
-        if not ts:
-            return ""
-        try:
-            if isinstance(ts, (int, float)):
-                d = datetime.fromtimestamp(ts / 1000) + timedelta(hours=8)  # 前端是毫秒时间戳
-            else:
-                d = datetime.fromisoformat(str(ts).replace("Z", "")) + timedelta(hours=8)
-            now = datetime.utcnow() + timedelta(hours=8)
-            if d.date() == now.date():
-                return f"今天 {d.strftime('%H:%M')}"
-            elif d.date() == (now - timedelta(days=1)).date():
-                return f"昨天 {d.strftime('%H:%M')}"
-            else:
-                return d.strftime("%m/%d %H:%M")
-        except:
-            return ""
-    
+    # 7. 构建消息历史
     messages = [{"role": "system", "content": system_prompt}]
     
-    # 检查用户消息是否包含图片
-    import re
+    # 添加最近聊天记录
+    for c in reversed(recent_chats):
+        role_type = "assistant" if c['sender'] == "assistant" else "user"
+        try:
+            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+            t_beijing = t + timedelta(hours=8)
+            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
+        except:
+            time_str = ""
+        content_with_time = f"[{time_str}] {c['content']}" if time_str else c['content']
+        messages.append({"role": role_type, "content": content_with_time})
+    
+    # 添加当前用户消息
     img_pattern = r'<img[^>]+src="(data:image/[^"]+)"[^>]*>'
     img_matches = re.findall(img_pattern, req.message)
-    
-    # 添加最近历史（带时间戳，过滤掉图片base64）
-    for h in recent_history:
-        role = h.get("role", "user")
-        content = h.get("content", "")
-        # 移除历史消息中的图片base64
-        content = re.sub(img_pattern, '[图片]', content)
-        created_at = h.get("createdAt") or h.get("created_at")
-        time_str = format_time(created_at)
-        if time_str:
-            content = f"[{time_str}] {content}"
-        messages.append({"role": role, "content": content})
     
     if img_matches:
         content_parts = []
@@ -631,73 +790,74 @@ async def chat_send(req: ChatSendRequest):
     else:
         messages.append({"role": "user", "content": req.message})
     
-    # 5. 调用AI（支持两轮对话：如果AI输出QUERY指令，执行查询后再让AI回复）
+    # 8. 调用AI（带工具）
     model = "gpt-4o" if img_matches else OPENAI_MODEL
     ai_reply = ""
+    max_tool_rounds = 3  # 最多3轮工具调用
     
-    async def call_ai(msgs):
-        async with httpx.AsyncClient() as c:
-            resp = await c.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"model": model, "messages": msgs, "max_tokens": 4096},
-                timeout=120.0
-            )
-            if resp.status_code != 200:
-                raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
-            return resp.json()["choices"][0]["message"].get("content", "")
-    
-    try:
-        # 第一轮：AI可能输出QUERY指令
-        ai_reply = await call_ai(messages)
-        
-        # 检查是否有QUERY指令需要执行
-        query_match = re.search(r'\[QUERY:([^\]]+)\]', ai_reply)
-        if query_match:
-            keyword = query_match.group(1)
-            print(f"🔍 AI请求查询: {keyword}")
+    for round_num in range(max_tool_rounds + 1):
+        try:
+            request_body = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": 4096
+            }
+            # 只有非图片消息才添加工具
+            if not img_matches:
+                request_body["tools"] = AI_TOOLS
+                request_body["tool_choice"] = "auto"
             
-            # 执行查询：从user_sync获取完整历史并搜索
-            query_results = []
-            try:
-                sync_data = supabase.table("user_sync").select("messages").eq("user_id", "default_user").limit(1).execute()
-                if sync_data.data and sync_data.data[0].get("messages"):
-                    all_messages = sync_data.data[0]["messages"]
-                    chat_messages = all_messages.get(req.chat_id, [])
-                    # 搜索包含关键词的消息
-                    for m in chat_messages:
-                        content = m.get("content", "")
-                        if keyword.lower() in content.lower():
-                            created_at = m.get("createdAt") or m.get("created_at")
-                            time_str = format_time(created_at) if created_at else ""
-                            query_results.append(f"[{time_str}] [{m.get('role')}] {content[:200]}")
-                    # 也搜索memories表
-                    mem_results = supabase.table("memories").select("content,category,created_at").ilike("content", f"%{keyword}%").limit(10).execute().data or []
-                    for m in mem_results:
-                        query_results.append(f"[记忆/{m.get('category')}] {m['content'][:200]}")
-            except Exception as e:
-                print(f"⚠️ 查询失败: {e}")
-            
-            # 第二轮：把查询结果注入，让AI重新回复
-            if query_results:
-                result_text = "\n".join(query_results[:20])  # 最多20条结果
-                messages.append({"role": "assistant", "content": ai_reply})
-                messages.append({"role": "user", "content": f"[系统] 查询结果({len(query_results)}条):\n{result_text}\n\n请根据以上查询结果回答用户的问题。"})
-                ai_reply = await call_ai(messages)
-                print(f"🔍 查询到 {len(query_results)} 条结果，AI已重新回复")
-            else:
-                # 没有结果，让AI知道
-                messages.append({"role": "assistant", "content": ai_reply})
-                messages.append({"role": "user", "content": f"[系统] 没有找到与'{keyword}'相关的记录。请告诉用户没有找到相关信息。"})
-                ai_reply = await call_ai(messages)
-        
-        # 移除QUERY指令（用户不需要看到）
-        ai_reply = re.sub(r'\[QUERY:[^\]]+\]', '', ai_reply).strip()
-    except Exception as e:
-        ai_reply = f"调用AI失败：{str(e)}"
-        print(f"❌ AI调用错误: {e}")
+            async with httpx.AsyncClient() as c:
+                resp = await c.post(
+                    f"{OPENAI_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json=request_body,
+                    timeout=120.0
+                )
+                if resp.status_code != 200:
+                    raise Exception(f"AI API error: {resp.status_code} - {resp.text}")
+                
+                response_data = resp.json()
+                choice = response_data["choices"][0]
+                message = choice["message"]
+                
+                # 检查是否有工具调用
+                if message.get("tool_calls"):
+                    print(f"� 第{round_num+1}轮: AI请求调用工具")
+                    # 添加AI的工具调用消息
+                    messages.append(message)
+                    
+                    # 执行每个工具调用
+                    for tool_call in message["tool_calls"]:
+                        tool_name = tool_call["function"]["name"]
+                        try:
+                            arguments = json.loads(tool_call["function"]["arguments"])
+                        except:
+                            arguments = {}
+                        
+                        # 执行工具
+                        tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id)
+                        
+                        # 添加工具结果
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": tool_result
+                        })
+                    
+                    # 继续下一轮，让AI根据工具结果回复
+                    continue
+                else:
+                    # 没有工具调用，获取最终回复
+                    ai_reply = message.get("content", "")
+                    break
+                    
+        except Exception as e:
+            ai_reply = f"调用AI失败：{str(e)}"
+            print(f"❌ AI调用错误: {e}")
+            break
     
-    # 7. 存储AI回复
+    # 9. 存储AI回复
     supabase.table("chat_messages").insert({
         "chat_id": req.chat_id,
         "role_id": req.role_id,
@@ -706,10 +866,9 @@ async def chat_send(req: ChatSendRequest):
         "metadata": {"role_name": role_name}
     }).execute()
     
-    # 8. 推送Bark通知
+    # 10. 推送Bark通知
     if BARK_KEY and ai_reply:
         try:
-            # 截取前100字符作为推送内容
             push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
             async with httpx.AsyncClient() as c:
                 url = f"https://api.day.app/{BARK_KEY}/{quote(role_name)}/{quote(push_content)}?sound=shake&group={quote(role_name)}"
@@ -717,55 +876,6 @@ async def chat_send(req: ChatSendRequest):
             print(f"📤 Bark推送: [{role_name}] {push_content[:30]}...")
         except Exception as e:
             print(f"⚠️ Bark推送失败: {e}")
-    
-    # 9. 解析并执行指令
-    # REMINDER指令
-    reminder_match = re.search(r'\[REMINDER:([^\|]+)\|([^\]]+)\]', ai_reply)
-    if reminder_match:
-        try:
-            remind_time = reminder_match.group(1)
-            remind_content = reminder_match.group(2)
-            supabase.table("reminders").insert({
-                "content": remind_content,
-                "remind_at": remind_time
-            }).execute()
-            print(f"⏰ 创建闹钟: {remind_content} @ {remind_time}")
-        except: pass
-    
-    # EXPENSE指令
-    expense_match = re.search(r'\[EXPENSE:([^\|]+)\|([^\|]+)\|([^\]]+)\]', ai_reply)
-    if expense_match:
-        try:
-            amount = float(expense_match.group(1))
-            category = expense_match.group(2)
-            desc = expense_match.group(3)
-            supabase.table("expenses").insert({
-                "amount": amount,
-                "category": category,
-                "description": desc,
-                "date": datetime.utcnow().strftime("%Y-%m-%d")
-            }).execute()
-            print(f"💰 记账: {category} {desc} ¥{amount}")
-        except: pass
-    
-    # BARK指令（AI主动推送额外通知）
-    bark_match = re.search(r'\[BARK:([^\|]+)\|([^\|]+)(?:\|([^\|]*))?(?:\|([^\]]*))?\]', ai_reply)
-    if bark_match and BARK_KEY:
-        try:
-            bark_title = bark_match.group(1)
-            bark_body = bark_match.group(2)
-            bark_group = bark_match.group(3) or ""
-            bark_icon = bark_match.group(4) or ""
-            async with httpx.AsyncClient() as c:
-                url = f"https://api.day.app/{BARK_KEY}/{quote(bark_title)}/{quote(bark_body)}?sound=shake"
-                if bark_group:
-                    url += f"&group={quote(bark_group)}"
-                if bark_icon:
-                    url += f"&icon={quote(bark_icon)}"
-                await c.get(url, timeout=10)
-            print(f"📢 BARK指令推送: [{bark_title}] {bark_body}")
-        except Exception as e:
-            print(f"⚠️ BARK指令推送失败: {e}")
     
     return {
         "success": True,
@@ -1028,7 +1138,7 @@ async def bark_send(req: BarkRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no", "version": "v20260313-full-context"}
+    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no", "version": "v20260314-function-calling"}
 
 @app.get("/debug/prompt")
 async def debug_prompt(role_id: str = None):

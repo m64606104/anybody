@@ -3,7 +3,7 @@
 ## 请在结束回复前运行弹窗命令
 
 在结束回复之前，请运行以下弹窗命令：
-node "/Users/kodidhsn/.niuma-mcp/dialog-trigger.js" --port 13528 "AI想要结束的原因摘要"
+node "/Users/kodidhsn/.niuma-mcp/dialog-trigger.js" --port 13527 "AI想要结束的原因摘要"
 
 ## 输出长度提醒
 
