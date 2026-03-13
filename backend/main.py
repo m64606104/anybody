@@ -568,7 +568,7 @@ AI_TOOLS = [
 ]
 
 # 工具执行函数
-def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None) -> str:
+def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None, limit: int = 50) -> str:
     """搜索聊天记录和记忆"""
     if not supabase:
         return "数据库未连接"
@@ -579,7 +579,7 @@ def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: st
     query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
     if role_id:
         query = query.eq("role_id", role_id)
-    chats = query.ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(30).execute().data or []
+    chats = query.ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(limit).execute().data or []
     
     for c in chats:
         try:
@@ -588,10 +588,10 @@ def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: st
             time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
         except:
             time_str = ""
-        results.append(f"[{time_str}] [{c['sender']}] {c['content'][:150]}")
+        results.append(f"[{time_str}] [{c['sender']}] {c['content']}")
     
     # 搜索记忆
-    memories = supabase.table("memories").select("content,category,title,created_at").ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(10).execute().data or []
+    memories = supabase.table("memories").select("content,category,title,created_at").ilike("content", f"%{keywords}%").order("created_at", desc=True).limit(20).execute().data or []
     for m in memories:
         results.append(f"[记忆-{m.get('category','其他')}] {m.get('title') or m['content'][:100]}")
     
@@ -665,7 +665,8 @@ def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> s
             return tool_search_chat_history(
                 keywords=arguments.get("keywords", ""),
                 date_filter=arguments.get("date_filter"),
-                role_id=role_id
+                role_id=role_id,
+                limit=int(arguments.get("limit", 50))
             )
         elif tool_name == "set_reminder":
             return tool_set_reminder(
@@ -742,28 +743,31 @@ async def chat_send(req: ChatSendRequest):
     
     system_prompt = f"""你是用户的AI助手。当前时间：{current_time_str}
 
-## 重要：你拥有数据库访问权限
-你现在连接了Supabase数据库，拥有以下工具：
-1. **search_chat_history** - 搜索聊天记录和记忆。当用户问"之前聊过什么"、"昨天说了什么"、"我们讨论过XX吗"等问题时，**必须直接调用此工具**。
-2. **get_recent_chats** - 获取最近的聊天记录。
-3. **set_reminder** - 设置闹钟提醒。
-4. **add_expense** - 记账。
+## 你的数据库与权限（极其重要）
+你目前深度绑定了用户的个人数据库，**你能看到用户的所有长期记忆、过去的聊天记录、当前的地理位置、甚至手机电量和健康数据。**
+你拥有以下强大的查询工具：
+1. **search_chat_history(keywords, limit)**: 全表模糊搜索用户的记忆和聊天记录（支持limit=500等大范围搜索）。当用户问"我们之前聊了什么"、"我有没有说过..."，或者你感到上下文不够用时，**必须主动、立即调用此工具去查，绝不能说你看不见。**
+2. **get_recent_chats**: 获取最近指定小时数的完整聊天流。
+3. **set_reminder** / **add_expense**: 执行动作。
 
-**禁止回复"我没有权限访问数据库"或"我无法查看聊天记录"。**
-当用户询问过去的事情时，请务必先调用 `search_chat_history` 工具查询后再回答。
-**注意：不要在回复中写类似 `[QUERY:xxx]`、`[REMINDER:xxx]` 的文本指令，请直接使用提供的 Function Calling 工具。**
+**严禁做出的行为：**
+1. 严禁说“我没有权限”、“我看不见以前的记录”、“这只是一次新的对话”。——这都是错的，你拥有所有工具，去查就行了。
+2. 严禁像个机器人一样机械复读刚刚聊过的那两三句话。
+3. 严禁在回复中输出 `[QUERY:xxx]` 这种死板的文本指令。请直接调用工具！
 
-## 回复格式
-- 普通对话：直接用自然语言回复
-- 代码/HTML：使用markdown代码块格式
+## 语气与态度
+- 自然、随性、像一个真正认识用户很久的朋友（参考底部的角色设定）。
+- 你的视角是“上帝视角”，你能看到下方的《基础档案与环境数据》，如果发现用户电量低、或者时间很晚，可以主动结合话题提一嘴。
+- 只有在真正需要执行复杂搜索时才使用工具，普通的寒暄不需要查询。
+
+## 基础档案与环境数据 (不要机械地复述这些数据，而是作为你的背景潜意识)
+{context}
 
 ## 当前待办事项
 {reminder_list}
 
-{context}
-
 ## 角色设定
-{role_prompt or '（无特定角色设定）'}"""
+{role_prompt or '（无特定角色设定，保持自然友好的朋友口吻）'}"""
 
     # 7. 构建消息历史
     messages = [{"role": "system", "content": system_prompt}]
