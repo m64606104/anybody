@@ -660,31 +660,35 @@ def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> s
     """执行工具调用"""
     print(f"🔧 执行工具: {tool_name}, 参数: {arguments}")
     
-    if tool_name == "search_chat_history":
-        return tool_search_chat_history(
-            keywords=arguments.get("keywords", ""),
-            date_filter=arguments.get("date_filter"),
-            role_id=role_id
-        )
-    elif tool_name == "set_reminder":
-        return tool_set_reminder(
-            remind_at=arguments.get("remind_at", ""),
-            content=arguments.get("content", "")
-        )
-    elif tool_name == "add_expense":
-        return tool_add_expense(
-            amount=float(arguments.get("amount", 0)),
-            category=arguments.get("category", "other"),
-            description=arguments.get("description", "")
-        )
-    elif tool_name == "get_recent_chats":
-        return tool_get_recent_chats(
-            hours=int(arguments.get("hours", 24)),
-            limit=int(arguments.get("limit", 50)),
-            role_id=role_id
-        )
-    else:
-        return f"未知工具: {tool_name}"
+    try:
+        if tool_name == "search_chat_history":
+            return tool_search_chat_history(
+                keywords=arguments.get("keywords", ""),
+                date_filter=arguments.get("date_filter"),
+                role_id=role_id
+            )
+        elif tool_name == "set_reminder":
+            return tool_set_reminder(
+                remind_at=arguments.get("remind_at", ""),
+                content=arguments.get("content", "")
+            )
+        elif tool_name == "add_expense":
+            return tool_add_expense(
+                amount=float(arguments.get("amount", 0)),
+                category=arguments.get("category", "other"),
+                description=arguments.get("description", "")
+            )
+        elif tool_name == "get_recent_chats":
+            return tool_get_recent_chats(
+                hours=int(arguments.get("hours", 24)),
+                limit=int(arguments.get("limit", 50)),
+                role_id=role_id
+            )
+        else:
+            return f"未知工具: {tool_name}"
+    except Exception as e:
+        print(f"❌ 工具执行错误: {tool_name} - {e}")
+        return f"工具执行失败: {str(e)}"
 
 # ============ 后端聊天（核心功能）============
 class ChatSendRequest(BaseModel):
@@ -863,23 +867,32 @@ async def chat_send(req: ChatSendRequest):
             print(f"❌ AI调用错误: {e}")
             break
     
-    # 9. 存储AI回复
-    supabase.table("chat_messages").insert({
-        "chat_id": req.chat_id,
-        "role_id": req.role_id,
-        "sender": "assistant",
-        "content": ai_reply,
-        "metadata": {"role_name": role_name}
-    }).execute()
+    # 9. 确保ai_reply不为空（防止数据库NOT NULL约束失败）
+    if not ai_reply or not ai_reply.strip():
+        ai_reply = "（抱歉，我暂时无法生成回复，请稍后再试）"
+        print(f"⚠️ AI回复为空，使用默认回复")
     
-    # 10. 推送Bark通知
-    if BARK_KEY and ai_reply:
+    # 10. 存储AI回复
+    try:
+        supabase.table("chat_messages").insert({
+            "chat_id": req.chat_id,
+            "role_id": req.role_id,
+            "sender": "assistant",
+            "content": ai_reply,
+            "metadata": {"role_name": role_name}
+        }).execute()
+        print(f"✅ AI回复已存储: {ai_reply[:50]}...")
+    except Exception as e:
+        print(f"❌ 存储AI回复失败: {e}")
+    
+    # 11. 推送Bark通知
+    if BARK_KEY:
         try:
             push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
             async with httpx.AsyncClient() as c:
-                url = f"https://api.day.app/{BARK_KEY}/{quote(role_name)}/{quote(push_content)}?sound=shake&group={quote(role_name)}"
-                await c.get(url, timeout=10)
-            print(f"📤 Bark推送: [{role_name}] {push_content[:30]}...")
+                url = f"https://api.day.app/{BARK_KEY}/【{role_name}】/{quote(push_content)}?sound=shake&group={quote(role_name)}"
+                resp = await c.get(url, timeout=10)
+                print(f"📤 Bark推送: [{role_name}] 状态={resp.status_code}")
         except Exception as e:
             print(f"⚠️ Bark推送失败: {e}")
     
