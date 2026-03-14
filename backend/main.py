@@ -124,6 +124,189 @@ def get_persona():
         return "\n".join([f"[{x['trait_category']}]{x['trait_detail']}" for x in r.data]) if r.data else ""
     except: return ""
 
+# ============ 用户画像提取 & 阶段性总结 ============
+PROFILE_KEYWORDS = ["喜欢", "讨厌", "偏好", "特点", "性格", "习惯", "爱好", "想要", "不喜欢", "最爱", "讨厌"]
+
+async def check_profile_needed(user_msg: str, ai_reply: str, role_id: str = None):
+    """检测聊天中是否包含用户偏好信息，如果有则提取并存入 user_persona 表"""
+    if not supabase: return
+    if not any(kw in user_msg or kw in ai_reply for kw in PROFILE_KEYWORDS):
+        return
+    try:
+        prompt = f"判断以下对话是否包含用户的偏好、习惯、性格等信息。如果有，用一句话总结（如'用户喜欢早睡'），否则只回复'否'。\n用户: {user_msg}\nAI: {ai_reply}"
+        result = await call_ai("你是一个用户画像提取助手，只输出结果，不要解释。", prompt)
+        result = result.strip()
+        if result and result != "否" and len(result) > 2 and len(result) < 100:
+            # 存入 user_persona 表
+            supabase.table("user_persona").insert({
+                "trait_category": "偏好",
+                "trait_detail": result,
+                "confidence_score": 0.7
+            }).execute()
+            print(f"👤 提取用户画像: {result}")
+    except Exception as e:
+        print(f"⚠️ 用户画像提取失败: {e}")
+
+async def update_core_memory(new_chat_text: str, role_id: str = None):
+    """增量更新核心记忆：基于新对话内容，更新用户画像、说话偏好等"""
+    if not supabase:
+        return
+    
+    try:
+        # 获取现有核心记忆
+        existing_memory = ""
+        core_mem_result = supabase.table("memories").select("id,content").eq("category", "核心记忆").limit(1).execute()
+        if core_mem_result.data:
+            existing_memory = core_mem_result.data[0].get("content", "")
+            existing_id = core_mem_result.data[0].get("id")
+        else:
+            existing_id = None
+        
+        # 让AI判断是否需要更新核心记忆
+        prompt = f"""你是记忆管理专家。请阅读以下新对话，判断是否需要更新核心记忆。
+
+【现有核心记忆】
+{existing_memory if existing_memory else '（暂无）'}
+
+【新对话内容】
+{new_chat_text}
+
+请判断：
+1. 新对话中是否有关于用户性格、偏好、说话方式的新信息？
+2. 是否有用户对AI的新要求或反馈？
+3. 是否有重要的新事件或记忆节点？
+4. 是否有需要修正的旧记忆？
+
+如果有任何需要更新的内容，请输出更新后的完整核心记忆（保留旧内容中仍然有效的部分，添加新内容，修正错误内容）。
+如果没有需要更新的内容，请只输出：[无需更新]
+
+注意：核心记忆应该简洁有力，只保留最重要的信息，控制在1000字以内。"""
+
+        result = await call_ai("你是记忆管理专家，负责维护AI与用户之间的长期记忆。", prompt)
+        
+        if "[无需更新]" in result:
+            print("🧠 核心记忆无需更新")
+            return
+        
+        # 更新核心记忆
+        now = datetime.utcnow()
+        if existing_id:
+            # 更新现有记忆（删除旧的，插入新的，因为memories表可能没有updated_at字段）
+            supabase.table("memories").delete().eq("id", existing_id).execute()
+            supabase.table("memories").insert({
+                "content": result,
+                "category": "核心记忆",
+                "title": "AI记忆档案 - 与用户的过往",
+                "mood": "温暖",
+                "created_at": now.isoformat(),
+                "metadata": {
+                    "type": "core_memory",
+                    "role_id": role_id or "role-default"
+                }
+            }).execute()
+            print(f"🧠 核心记忆已更新: {result[:50]}...")
+        else:
+            # 创建新记忆
+            supabase.table("memories").insert({
+                "content": result,
+                "category": "核心记忆",
+                "title": "AI记忆档案 - 与用户的过往",
+                "mood": "温暖",
+                "created_at": now.isoformat(),
+                "metadata": {
+                    "type": "core_memory",
+                    "role_id": role_id or "role-default"
+                }
+            }).execute()
+            print(f"🧠 核心记忆已创建: {result[:50]}...")
+            
+    except Exception as e:
+        print(f"⚠️ 更新核心记忆失败: {e}")
+
+
+async def check_and_summary(role_id: str = None, threshold: int = 30):
+    """检查是否需要生成阶段性总结：如果最近N条聊天记录中没有总结，则触发总结"""
+    if not supabase: return ""
+    try:
+        # 获取该角色最近的聊天记录数量
+        query = supabase.table("chat_messages").select("id, sender, content, created_at")
+        if role_id:
+            query = query.eq("role_id", role_id)
+        recent_chats = query.order("created_at", desc=True).limit(threshold).execute().data or []
+        
+        if len(recent_chats) < threshold:
+            return ""  # 记录不够，不总结
+        
+        # 检查最近是否已有总结（避免重复总结）
+        mem_query = supabase.table("memories").select("created_at").eq("category", "阶段总结")
+        if role_id:
+            mem_query = mem_query.contains("metadata", {"role_id": role_id})
+        last_summary = mem_query.order("created_at", desc=True).limit(1).execute().data
+        
+        if last_summary:
+            last_summary_time = last_summary[0].get("created_at", "")
+            oldest_chat_time = recent_chats[-1].get("created_at", "")
+            if last_summary_time > oldest_chat_time:
+                return ""  # 已经总结过了
+        
+        # 收集消息ID和时间范围
+        msg_ids = [c['id'] for c in recent_chats]
+        first_msg_id = msg_ids[-1]  # 最早的消息ID
+        last_msg_id = msg_ids[0]    # 最新的消息ID
+        
+        # 时间范围
+        try:
+            first_time = recent_chats[-1].get('created_at', '')[:16].replace('T', ' ')
+            last_time = recent_chats[0].get('created_at', '')[:16].replace('T', ' ')
+        except:
+            first_time, last_time = "", ""
+        
+        # 构建对话文本
+        chat_text = "\n".join([
+            f"{'用户' if c['sender']=='user' else 'AI'}: {c['content'][:80]}" 
+            for c in reversed(recent_chats)
+        ])
+        
+        # 生成总结
+        prompt = f"把以下对话总结成关键要点(50字内)。最末尾另起一行加判定：[心情:xxx]\n{chat_text}"
+        summary = await call_ai("你是记忆总结助手，用简洁的语言概括对话要点，不要逐条复述。", prompt)
+        
+        # 提取心情
+        mood = "平静"
+        import re
+        mood_match = re.search(r'\[心情:(.*?)\]', summary)
+        if mood_match:
+            mood = mood_match.group(1).strip()
+            summary = re.sub(r'\[心情:.*?\]', '', summary).strip()
+        
+        if summary and len(summary) > 10:
+            # 在总结末尾附加消息索引信息
+            summary_with_index = f"{summary}\n[原文索引: msg_id {first_msg_id} ~ {last_msg_id}, 时间 {first_time} ~ {last_time}]"
+            
+            supabase.table("memories").insert({
+                "title": "📝 阶段总结",
+                "content": summary_with_index,
+                "category": "阶段总结",
+                "mood": mood,
+                "importance": 4,
+                "metadata": {
+                    "role_id": role_id or "role-default",
+                    "msg_ids": msg_ids,
+                    "first_msg_id": first_msg_id,
+                    "last_msg_id": last_msg_id,
+                    "time_range": f"{first_time} ~ {last_time}"
+                }
+            }).execute()
+            print(f"📝 生成阶段总结: {summary[:50]}... (消息ID: {first_msg_id} ~ {last_msg_id})")
+            
+            # 同时更新核心记忆（增量更新）
+            await update_core_memory(chat_text, role_id)
+            
+            return summary
+    except Exception as e:
+        print(f"⚠️ 阶段总结失败: {e}")
+    return ""
+
 def get_all_context(role_id: str = None):
     """获取Supabase所有数据作为AI的资料库，可按role_id过滤聊天记录"""
     if not supabase: return ""
@@ -166,7 +349,10 @@ def get_all_context(role_id: str = None):
     reminder_list = "\n".join([f"- {r['content']} ({r['remind_at']})" + (f" [重复:{r['repeat']}]" if r.get('repeat') else "") for r in reminders]) if reminders else "无"
     
     # 所有记忆（不限制数量）
-    memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(100).execute().data or []
+    mem_query = supabase.table("memories").select("content,category,title,created_at")
+    if role_id:
+        mem_query = mem_query.contains("metadata", {"role_id": role_id})
+    memories = mem_query.order("created_at", desc=True).limit(100).execute().data or []
     mem_list = "\n".join([f"- [{m.get('category','其他')}] {m.get('title') or m['content'][:100]}" for m in memories]) if memories else "无"
     
     # 聊天记录（扩大到100条）- 按role_id过滤
@@ -481,7 +667,7 @@ AI_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_chat_history",
-            "description": "搜索用户的聊天记录和记忆全库。你可以通过此工具随时访问几年内的所有历史记录。当你需要回忆、或者用户提及过去的事情时，必须主动使用此工具进行深度检索。",
+            "description": "搜索用户的聊天记录。注意：返回的'记忆总结'只是索引/目录，不是原文！如果用户问历史细节（如具体说了什么、标点符号、原话等），你必须用此工具先定位 msg_id 范围，然后强制调用 get_messages_by_ids 读取原文。严禁直接用总结回答细节问题！",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -500,6 +686,14 @@ AI_TOOLS = [
                     "offset": {
                         "type": "integer",
                         "description": "跳过的记录条数，用于分批翻页。比如看完了前 100 条后，传 offset=100 继续看更早的。默认 0。"
+                    },
+                    "sort": {
+                        "type": "string",
+                        "description": "排序方式。'desc'为按时间倒序(最近的在前，默认)，'asc'为按时间正序(最早的在前)。当用户问'最开始'、'最早'时，务必传 'asc'。"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "查询模式。'auto'(默认)=同时返回聊天原文和记忆总结；'raw'=只返回聊天原文；'memory'=只返回记忆总结(仅用于定位范围，不能用于回答细节)。重要：总结里的[msg_id xxx~xxx]是索引，必须用 get_messages_by_ids 读原文才能回答细节问题！"
                     }
                 },
                 "required": ["keywords"]
@@ -572,56 +766,119 @@ AI_TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chat_stats",
+            "description": "获取聊天记录的统计信息，包括总条数、最早和最新记录的时间。当用户问'我们聊了多少条'、'总共有多少记录'时使用此工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_messages_by_ids",
+            "description": "【必须工具】根据消息ID获取聊天原文。当用户问历史细节（如'我说了什么'、'有多少标点'、'原话是什么'）时，你必须调用此工具读取原文，严禁用总结回答！流程：1.用search_chat_history定位msg_id范围 2.用此工具读原文 3.基于原文回答。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "msg_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "要获取的消息ID列表，如 [123, 124, 125]"
+                    },
+                    "start_id": {
+                        "type": "integer",
+                        "description": "起始消息ID（与end_id配合使用，获取ID范围内的所有消息）"
+                    },
+                    "end_id": {
+                        "type": "integer",
+                        "description": "结束消息ID（与start_id配合使用）"
+                    }
+                },
+                "required": []
+            }
+        }
     }
 ]
 
 # 工具执行函数
-def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None, limit: int = 50, offset: int = 0) -> str:
-    """搜索聊天记录和记忆"""
+def tool_search_chat_history(keywords: str, date_filter: str = None, role_id: str = None, limit: int = 50, offset: int = 0, sort: str = "desc", mode: str = "auto") -> str:
+    """搜索聊天记录和记忆。mode='raw'只返回原文，'memory'只返回记忆，'auto'两者都返回"""
     if not supabase:
         return "数据库未连接"
     
-    # 强制限制单词查询上限，防止撑爆 Token（最大100）
-    actual_limit = min(limit, 100)
+    # 强制限制单词查询上限，防止撑爆 Token（最大200）
+    actual_limit = min(limit, 200)
     
     results = []
+    chat_count = 0
     
-    # 搜索聊天记录
-    query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
-    if role_id:
-        query = query.eq("role_id", role_id)
-    # 不为空时才使用 ilike，否则直接查最新
-    if keywords.strip():
-        query = query.ilike("content", f"%{keywords}%")
-    chats = query.order("created_at", desc=True).range(offset, offset + actual_limit - 1).execute().data or []
+    # 搜索聊天记录（mode='auto' 或 'raw' 时查询）
+    if mode in ["auto", "raw"]:
+        query = supabase.table("chat_messages").select("sender,content,created_at,role_id")
+        if role_id:
+            query = query.eq("role_id", role_id)
+        if keywords.strip():
+            query = query.ilike("content", f"%{keywords}%")
+        
+        # 日期过滤：支持 YYYY-MM-DD 格式
+        if date_filter:
+            try:
+                # 解析日期，构建当天的时间范围
+                date_start = f"{date_filter}T00:00:00"
+                date_end = f"{date_filter}T23:59:59"
+                query = query.gte("created_at", date_start).lte("created_at", date_end)
+                print(f"🔍 日期过滤: {date_start} ~ {date_end}")
+            except Exception as e:
+                print(f"⚠️ 日期过滤失败: {e}")
+            
+        is_desc = sort.lower() != "asc"
+        chats = query.order("created_at", desc=is_desc).range(offset, offset + actual_limit - 1).execute().data or []
+        chat_count = len(chats)
+        
+        for c in chats:
+            try:
+                t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+                t_beijing = t + timedelta(hours=8)
+                time_str = t_beijing.strftime("%Y-%m-%d %H:%M:%S")  # 完整时间含秒
+            except:
+                time_str = ""
+            # raw模式下显示完整原文，不截断
+            content = c['content'] if mode == "raw" else c['content'][:200] + ("..." if len(c['content']) > 200 else "")
+            sender_label = "用户" if c['sender'] == 'user' else "AI"
+            results.append(f"[{time_str}] [{sender_label}] {content}")
     
-    for c in chats:
-        try:
-            t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
-            t_beijing = t + timedelta(hours=8)
-            time_str = t_beijing.strftime("%Y-%m-%d %H:%M")
-        except:
-            time_str = ""
-        results.append(f"[{time_str}] [{c['sender']}] {c['content']}")
-    
-    # 搜索记忆（仅在 offset 为 0 时顺带查一下，避免翻页时重复带出）
-    if offset == 0:
-        mem_query = supabase.table("memories").select("content,category,title,created_at")
+    # 搜索记忆（mode='auto' 或 'memory' 时查询，且仅在 offset 为 0 时）
+    if mode in ["auto", "memory"] and offset == 0:
+        mem_query = supabase.table("memories").select("content,category,title,created_at,mood")
+        if role_id:
+            mem_query = mem_query.contains("metadata", {"role_id": role_id})
         if keywords.strip():
             mem_query = mem_query.ilike("content", f"%{keywords}%")
         memories = mem_query.order("created_at", desc=True).limit(20).execute().data or []
         for m in memories:
-            results.append(f"[记忆-{m.get('category','其他')}] {m.get('title') or m['content'][:100]}")
+            mood = f"[{m.get('mood', '平静')}]" if m.get('mood') else ""
+            results.append(f"[记忆-{m.get('category','其他')}]{mood} {m.get('content', '')[:150]}")
     
     if not results:
         if offset > 0:
             return f"从第 {offset} 条开始没有找到更多与'{keywords}'相关的记录了。"
         return f"没有找到与'{keywords}'相关的记录。"
     
-    # 如果满载返回，提示 AI 可能还有更多
-    more_hint = f"\n(注：已返回 {len(chats)} 条聊天记录，可能还有更多，如需继续查看请将 offset 设为 {offset + actual_limit} 再次查询)" if len(chats) == actual_limit else ""
+    # 如果满载返回，强烈提示 AI 还有更多数据
+    if chat_count == actual_limit:
+        more_hint = f"\n\n⚠️【重要】已返回 {chat_count} 条记录，但数据库中还有更多！如果用户要求查看全部记录，你必须继续调用此工具，设置 offset={offset + actual_limit} 来获取下一批数据。不要停止，继续查询直到返回数量少于 {actual_limit} 条为止！"
+    else:
+        more_hint = f"\n\n✅ 已返回全部 {chat_count} 条记录（本批次）。"
     
-    return f"找到相关记录 (Offset: {offset}, Limit: {actual_limit}):\n" + "\n".join(results) + more_hint
+    mode_label = {"auto": "聊天+记忆", "raw": "聊天原文", "memory": "记忆总结"}.get(mode, mode)
+    return f"找到相关记录 (模式: {mode_label}, Offset: {offset}, Limit: {actual_limit}, Sort: {sort}):\n" + "\n".join(results) + more_hint
 
 def tool_set_reminder(remind_at: str, content: str) -> str:
     """设置提醒"""
@@ -653,6 +910,49 @@ def tool_add_expense(amount: float, category: str, description: str) -> str:
     except Exception as e:
         return f"记账失败：{str(e)}"
 
+def tool_get_chat_stats() -> str:
+    """获取聊天记录统计信息"""
+    if not supabase:
+        return "数据库未连接"
+    try:
+        # 统计总数
+        result = supabase.table("chat_messages").select("id", count="exact").execute()
+        total_count = result.count
+        
+        # 获取最早和最新记录
+        earliest = supabase.table("chat_messages").select("id,created_at,sender,content").order("created_at", desc=False).limit(1).execute().data
+        latest = supabase.table("chat_messages").select("id,created_at,sender,content").order("created_at", desc=True).limit(1).execute().data
+        
+        if earliest and latest:
+            e = earliest[0]
+            l = latest[0]
+            try:
+                e_time = datetime.fromisoformat(e['created_at'].replace("Z", ""))
+                e_time_beijing = (e_time + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+                l_time = datetime.fromisoformat(l['created_at'].replace("Z", ""))
+                l_time_beijing = (l_time + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                e_time_beijing = e['created_at']
+                l_time_beijing = l['created_at']
+            
+            return f"""=== 聊天记录统计 ===
+总条数: {total_count} 条
+ID范围: {e['id']} ~ {l['id']}
+
+最早记录:
+- 时间: {e_time_beijing}
+- 发送者: {'用户' if e['sender'] == 'user' else 'AI'}
+- 内容: {e['content'][:100]}
+
+最新记录:
+- 时间: {l_time_beijing}
+- 发送者: {'用户' if l['sender'] == 'user' else 'AI'}
+- 内容: {l['content'][:100]}"""
+        else:
+            return f"总共 {total_count} 条聊天记录"
+    except Exception as e:
+        return f"统计失败: {str(e)}"
+
 def tool_get_recent_chats(hours: int = 24, limit: int = 50, role_id: str = None) -> str:
     """获取最近聊天记录"""
     if not supabase:
@@ -679,6 +979,54 @@ def tool_get_recent_chats(hours: int = 24, limit: int = 50, role_id: str = None)
     
     return f"最近{hours}小时的{len(results)}条聊天记录:\n" + "\n".join(results)
 
+def tool_get_messages_by_ids(msg_ids: list = None, start_id: int = None, end_id: int = None) -> str:
+    """根据消息ID获取聊天原文"""
+    print(f"🔍 get_messages_by_ids 被调用: msg_ids={msg_ids}, start_id={start_id}, end_id={end_id}")
+    if not supabase:
+        return "【错误】数据库未连接，无法读取原文"
+    
+    try:
+        if msg_ids:
+            # 根据ID列表获取
+            print(f"🔍 查询模式: ID列表 {msg_ids}")
+            chats = supabase.table("chat_messages").select("id,sender,content,created_at").in_("id", msg_ids).order("created_at", desc=False).execute().data or []
+        elif start_id is not None and end_id is not None:
+            # 根据ID范围获取
+            print(f"🔍 查询模式: ID范围 {start_id} ~ {end_id}")
+            chats = supabase.table("chat_messages").select("id,sender,content,created_at").gte("id", min(start_id, end_id)).lte("id", max(start_id, end_id)).order("created_at", desc=False).execute().data or []
+        else:
+            return "【错误】参数不完整：请提供 msg_ids 列表，或者同时提供 start_id 和 end_id"
+        
+        print(f"🔍 查询结果: 返回 {len(chats)} 条记录")
+        
+        if not chats:
+            return f"【错误】未找到 ID {start_id}~{end_id} 的消息，请检查ID范围是否正确。严禁编造内容！"
+        
+        user_msgs = []
+        ai_msgs = []
+        for c in chats:
+            try:
+                t = datetime.fromisoformat(c['created_at'].replace("Z", ""))
+                t_beijing = t + timedelta(hours=8)
+                time_str = t_beijing.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                time_str = ""
+            line = f"[ID:{c['id']}] [{time_str}] {c['content']}"
+            if c['sender'] == 'user':
+                user_msgs.append(line)
+            else:
+                ai_msgs.append(line)
+        
+        result = f"=== 原文查询结果 (ID {start_id} ~ {end_id}) ===\n\n"
+        result += f"【用户发送的消息】共 {len(user_msgs)} 条:\n"
+        result += "\n".join(user_msgs) if user_msgs else "(无)"
+        result += f"\n\n【AI发送的消息】共 {len(ai_msgs)} 条:\n"
+        result += "\n".join(ai_msgs) if ai_msgs else "(无)"
+        result += "\n\n⚠️ 注意：请仔细阅读上面的【用户发送的消息】原文，逐字分析后再回答用户的问题。不要编造内容！"
+        return result
+    except Exception as e:
+        return f"获取消息失败: {str(e)}"
+
 def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> str:
     """执行工具调用"""
     print(f"🔧 执行工具: {tool_name}, 参数: {arguments}")
@@ -690,7 +1038,9 @@ def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> s
                 date_filter=arguments.get("date_filter"),
                 role_id=role_id,
                 limit=int(arguments.get("limit", 50)),
-                offset=int(arguments.get("offset", 0))
+                offset=int(arguments.get("offset", 0)),
+                sort=arguments.get("sort", "desc"),
+                mode=arguments.get("mode", "auto")
             )
         elif tool_name == "set_reminder":
             return tool_set_reminder(
@@ -709,6 +1059,14 @@ def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> s
                 limit=int(arguments.get("limit", 50)),
                 role_id=role_id
             )
+        elif tool_name == "get_messages_by_ids":
+            return tool_get_messages_by_ids(
+                msg_ids=arguments.get("msg_ids"),
+                start_id=arguments.get("start_id"),
+                end_id=arguments.get("end_id")
+            )
+        elif tool_name == "get_chat_stats":
+            return tool_get_chat_stats()
         else:
             return f"未知工具: {tool_name}"
     except Exception as e:
@@ -760,6 +1118,15 @@ async def chat_send(req: ChatSendRequest):
     reminders = supabase.table("reminders").select("content,remind_at").eq("is_done", False).order("remind_at").limit(10).execute().data or []
     reminder_list = "\n".join([f"- {r['content']} ({r['remind_at']})" for r in reminders]) if reminders else "无"
     
+    # 5.5 获取核心记忆（AI的长期记忆档案）
+    core_memory = ""
+    try:
+        core_mem_result = supabase.table("memories").select("content").eq("category", "核心记忆").limit(1).execute()
+        if core_mem_result.data:
+            core_memory = core_mem_result.data[0].get("content", "")
+    except Exception as e:
+        print(f"⚠️ 加载核心记忆失败: {e}")
+    
     # 6. 构建系统提示词（强调工具使用）
     now_beijing = datetime.utcnow() + timedelta(hours=8)
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -768,28 +1135,38 @@ async def chat_send(req: ChatSendRequest):
     system_prompt = f"""你是用户的AI助手。当前时间：{current_time_str}
 
 ## 你的数据库与权限（极其重要）
-你目前深度绑定了用户的个人数据库，**你能看到用户的所有长期记忆、过去的聊天记录、当前的地理位置、甚至手机电量和健康数据。**
+你目前深度绑定了用户的个人数据库，你能看到用户的所有长期记忆、过去的聊天记录、当前的地理位置、甚至手机电量和健康数据。
 你拥有以下强大的查询工具：
-1. **search_chat_history(keywords, limit, offset)**: 全表模糊搜索用户的记忆和聊天记录。支持分页（通过 offset 参数）和大范围搜索。当用户问"我们之前聊了什么"、"我有没有说过..."，或者你感到上下文不够用时，**必须主动、立即调用此工具去查，绝不能说你看不见。**
-2. **get_recent_chats**: 获取最近指定小时数的完整聊天流。
-3. **set_reminder** / **add_expense**: 执行动作。
+1. search_chat_history(keywords, limit, offset, sort, mode): 搜索聊天记录和记忆总结。
+2. get_messages_by_ids(start_id, end_id): 根据消息ID获取聊天原文。
+3. get_recent_chats: 获取最近指定小时数的完整聊天流。
+4. set_reminder / add_expense: 执行动作。
 
-**严禁做出的行为：**
-1. 严禁说“我没有权限”、“我看不见以前的记录”、“这只是一次新的对话”。——这都是错的，你拥有所有工具，去查就行了。
-2. 严禁像个机器人一样机械复读刚刚聊过的那两三句话。
-3. 严禁用空洞的“AI模板”总结聊天记录。
+## 【二级跳转规则 - 最高优先级！！！】
+记忆总结(memories)只是"目录/索引"，不是"原文"！总结会丢失标点、语气、原话等关键细节！
+当用户问历史细节时（如"我说了什么"、"有多少标点"、"原话是什么"、"具体内容"），你必须执行以下流程：
+1. 定位：先用 search_chat_history 找到相关记录，从总结中提取 [msg_id xxx ~ xxx] 范围
+2. 取原文：必须调用 get_messages_by_ids(start_id=xxx, end_id=xxx) 读取 chat_messages 原文
+3. 回答：基于原文逐字逐句回答用户问题
+
+严禁行为（违反即为失败）：
+1. 严禁直接用总结内容回答细节问题——总结是压缩过的，会丢失所有细节
+2. 严禁说"我没有权限"、"我看不见以前的记录"——你有工具，去查
+3. 严禁编造原文内容——必须调用 get_messages_by_ids 读取真实原文
+4. 严禁用空洞的"AI模板"总结聊天记录
 
 ## 面对大工作量时的【任务分解与诚实汇报】机制（非常重要！）
-当用户要求你阅读几百条甚至所有历史记录时（比如“去读所有的500条历史记录”），**绝对不要试图一次性全部读完**，那会导致你过载崩溃。
+当用户要求你阅读几百条甚至所有历史记录时，绝对不要试图一次性全部读完，那会导致你过载崩溃。
 你需要采取以下策略：
-1. **分批查阅**：首先调用 `search_chat_history` 工具，设置 limit=100，offset=0，只看前 100 条。
-2. **诚实汇报进度**：看完前 100 条后，直接回复用户你当前的进度和初步发现。例如：“我已经开始翻阅了，但 500 条信息量很大，我先读完了最新的 100 条，发现我们最初是在讨论... 等我继续读完剩下的部分再给你更完整的反馈。需要我现在继续往下翻吗？”
-3. **拒绝糊弄**：你的总结必须包含具体的日期和具体的讨论内容细节，绝对不能说“我们讨论了各种话题，建立了信任”这种空话。
-4. **接力查询**：当用户同意继续时，你在下一次回复中调用工具，传入 offset=100 继续查阅。
+1. 精准排序：如果用户问的是"最开始聊了什么"、"最早的记录"，你必须在调用工具时传入 sort='asc'，这样你就能直接看到第0条到第100条的最早记录。
+2. 分批查阅：首次调用 search_chat_history 工具，设置 limit=100，offset=0，只看前 100 条。
+3. 诚实汇报进度：看完前 100 条后，直接回复用户你当前的进度和初步发现。
+4. 拒绝糊弄：你的总结必须包含具体的日期和具体的讨论内容细节，绝对不能说"我们讨论了各种话题，建立了信任"这种空话。
+5. 接力查询：当用户同意继续时，你在下一次回复中调用工具，传入 offset=100 继续查阅。
 
 ## 语气与态度
 - 自然、随性、像一个真正认识用户很久的朋友（参考底部的角色设定）。
-- 你的视角是“上帝视角”，你能看到下方的《基础档案与环境数据》，如果发现用户电量低、或者时间很晚，可以主动结合话题提一嘴。
+- 你的视角是"上帝视角"，你能看到下方的基础档案与环境数据，如果发现用户电量低、或者时间很晚，可以主动结合话题提一嘴。
 - 只有在真正需要执行复杂搜索时才使用工具，普通的寒暄不需要查询。
 
 ## 基础档案与环境数据 (不要机械地复述这些数据，而是作为你的背景潜意识)
@@ -797,6 +1174,9 @@ async def chat_send(req: ChatSendRequest):
 
 ## 当前待办事项
 {reminder_list}
+
+## 【核心记忆档案 - 你与用户的过往】
+{core_memory if core_memory else '（暂无核心记忆，请运行 revive_ai_memory.py 生成）'}
 
 ## 角色设定
 {role_prompt or '（无特定角色设定，保持自然友好的朋友口吻）'}"""
@@ -834,7 +1214,7 @@ async def chat_send(req: ChatSendRequest):
     # 8. 调用AI（带工具）
     model = "gpt-4o" if img_matches else OPENAI_MODEL
     ai_reply = ""
-    max_tool_rounds = 3  # 最多3轮工具调用
+    max_tool_rounds = 6  # 最多6轮工具调用（支持分批查询大量数据）
     
     for round_num in range(max_tool_rounds + 1):
         try:
@@ -880,6 +1260,8 @@ async def chat_send(req: ChatSendRequest):
                         
                         # 执行工具
                         tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id)
+                        print(f"📋 工具 {tool_name} 返回结果长度: {len(tool_result)} 字符")
+                        print(f"📋 工具 {tool_name} 返回内容预览: {tool_result[:500]}...")
                         tool_results_text.append(f"【工具 {tool_name} 执行结果】:\n{tool_result}")
                     
                     # 使用 Fallback 策略：因为代理 API 可能不支持标准的 tool_call 第二轮上下文拼接
@@ -926,7 +1308,14 @@ async def chat_send(req: ChatSendRequest):
     except Exception as e:
         print(f"❌ 存储AI回复失败: {e}")
     
-    # 11. 推送Bark通知
+    # 11. 用户画像提取 & 阶段性总结（后台异步执行，不阻塞返回）
+    try:
+        await check_profile_needed(req.message, ai_reply, req.role_id)
+        await check_and_summary(req.role_id)
+    except Exception as e:
+        print(f"⚠️ 画像/总结处理失败: {e}")
+    
+    # 12. 推送Bark通知
     if BARK_KEY:
         try:
             push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
@@ -1205,8 +1594,17 @@ async def debug_prompt(role_id: str = None):
     """调试：返回实际发送给AI的系统提示词"""
     if not supabase:
         return {"error": "no supabase"}
-    all_chats = supabase.table("chat_messages").select("sender,content,created_at").order("created_at", desc=True).limit(500).execute().data or []
-    all_memories = supabase.table("memories").select("content,category,title,created_at").order("created_at", desc=True).limit(200).execute().data or []
+        
+    chat_query = supabase.table("chat_messages").select("sender,content,created_at")
+    if role_id:
+        chat_query = chat_query.eq("role_id", role_id)
+    all_chats = chat_query.order("created_at", desc=True).limit(500).execute().data or []
+    
+    mem_query = supabase.table("memories").select("content,category,title,created_at")
+    if role_id:
+        mem_query = mem_query.contains("metadata", {"role_id": role_id})
+    all_memories = mem_query.order("created_at", desc=True).limit(200).execute().data or []
+    
     all_reminders = supabase.table("reminders").select("content,remind_at,is_done").order("remind_at").execute().data or []
     
     roles = get_all_roles()
@@ -1263,6 +1661,28 @@ async def debug_prompt(role_id: str = None):
         "role_prompt_preview": role_prompt[:300] if role_prompt else "(empty)",
         "system_prompt_length": len(system_prompt),
         "system_prompt_preview": system_prompt[:2000],
+    }
+
+@app.get("/debug/test-tool")
+async def debug_test_tool(start_id: int = 37, end_id: int = 47):
+    """直接测试 get_messages_by_ids 工具，看能否读取原文"""
+    result = tool_get_messages_by_ids(start_id=start_id, end_id=end_id)
+    return {
+        "tool": "get_messages_by_ids",
+        "params": {"start_id": start_id, "end_id": end_id},
+        "result_length": len(result),
+        "result": result
+    }
+
+@app.get("/debug/search-tool")
+async def debug_search_tool(keywords: str = "", mode: str = "auto", limit: int = 10):
+    """直接测试 search_chat_history 工具"""
+    result = tool_search_chat_history(keywords=keywords, mode=mode, limit=limit)
+    return {
+        "tool": "search_chat_history",
+        "params": {"keywords": keywords, "mode": mode, "limit": limit},
+        "result_length": len(result),
+        "result": result
     }
 
 if __name__ == "__main__":
