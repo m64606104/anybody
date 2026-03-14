@@ -147,6 +147,53 @@ async def check_profile_needed(user_msg: str, ai_reply: str, role_id: str = None
     except Exception as e:
         print(f"⚠️ 用户画像提取失败: {e}")
 
+async def check_ai_self_reflection(user_msg: str, ai_reply: str, role_id: str = None):
+    """检测用户对AI的反馈，提取AI应该调整的行为，存入 ai_self_persona 表"""
+    if not supabase:
+        return
+    
+    # 检测用户对AI的评价/反馈关键词
+    feedback_keywords = ["太假", "太刻意", "不自然", "别这样", "不要这样", "讨厌你", "你应该", "希望你", "能不能", "不喜欢你", "你这样", "你总是", "你每次", "改一下", "调整", "语气", "说话方式", "风格"]
+    
+    if not any(kw in user_msg for kw in feedback_keywords):
+        return
+    
+    try:
+        prompt = f"""分析以下对话，判断用户是否对AI的表现有反馈或要求。
+如果有，请用一句话总结AI应该如何调整（如"语气需要更自然，不要太刻意开朗"）。
+如果没有明确反馈，只回复"否"。
+
+用户: {user_msg}
+AI: {ai_reply}"""
+        
+        result = await call_ai("你是AI自我反省助手，帮助AI理解用户对它的期望。只输出结果，不要解释。", prompt)
+        result = result.strip()
+        
+        if result and result != "否" and len(result) > 2 and len(result) < 200:
+            # 存入 ai_self_persona 表
+            supabase.table("ai_self_persona").insert({
+                "trait_category": "用户反馈",
+                "trait_detail": result,
+                "confidence_score": 0.8
+            }).execute()
+            print(f"🤖 提取AI自我画像: {result}")
+    except Exception as e:
+        print(f"⚠️ AI自我画像提取失败: {e}")
+
+
+def get_ai_self_persona():
+    """获取AI自我画像"""
+    if not supabase:
+        return ""
+    try:
+        r = supabase.table("ai_self_persona").select("trait_category,trait_detail").order("confidence_score", desc=True).limit(20).execute()
+        if r.data:
+            return "\n".join([f"[{x['trait_category']}] {x['trait_detail']}" for x in r.data])
+        return ""
+    except:
+        return ""
+
+
 async def update_core_memory(new_chat_text: str, role_id: str = None):
     """增量更新核心记忆：基于新对话内容，更新用户画像、说话偏好等"""
     if not supabase:
@@ -1027,19 +1074,32 @@ def tool_get_messages_by_ids(msg_ids: list = None, start_id: int = None, end_id:
     except Exception as e:
         return f"获取消息失败: {str(e)}"
 
-def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None) -> str:
+def execute_tool_call(tool_name: str, arguments: dict, role_id: str = None, user_message: str = "") -> str:
     """执行工具调用"""
     print(f"🔧 执行工具: {tool_name}, 参数: {arguments}")
     
     try:
         if tool_name == "search_chat_history":
+            # 【智能参数修正】检测用户是否问"最早"相关问题
+            earliest_keywords = ["最早", "第一条", "第一天", "最开始", "一开始", "起初", "最初"]
+            is_earliest_query = any(kw in user_message for kw in earliest_keywords)
+            
+            # 如果用户问最早的记录，强制 sort=asc 且清除 date_filter
+            if is_earliest_query:
+                print(f"⚠️ 【参数修正】检测到用户问最早记录，强制 sort=asc，清除 date_filter")
+                forced_sort = "asc"
+                forced_date_filter = None
+            else:
+                forced_sort = arguments.get("sort", "desc")
+                forced_date_filter = arguments.get("date_filter")
+            
             return tool_search_chat_history(
                 keywords=arguments.get("keywords", ""),
-                date_filter=arguments.get("date_filter"),
+                date_filter=forced_date_filter,
                 role_id=role_id,
                 limit=int(arguments.get("limit", 50)),
                 offset=int(arguments.get("offset", 0)),
-                sort=arguments.get("sort", "desc"),
+                sort=forced_sort,
                 mode=arguments.get("mode", "auto")
             )
         elif tool_name == "set_reminder":
@@ -1127,6 +1187,9 @@ async def chat_send(req: ChatSendRequest):
     except Exception as e:
         print(f"⚠️ 加载核心记忆失败: {e}")
     
+    # 5.6 获取AI自我画像（AI应该是什么样的人）
+    ai_self_persona = get_ai_self_persona()
+    
     # 6. 构建系统提示词（强调工具使用）
     now_beijing = datetime.utcnow() + timedelta(hours=8)
     weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -1177,6 +1240,9 @@ async def chat_send(req: ChatSendRequest):
 
 ## 【核心记忆档案 - 你与用户的过往】
 {core_memory if core_memory else '（暂无核心记忆，请运行 revive_ai_memory.py 生成）'}
+
+## 【AI自我画像 - 你应该是什么样的人】
+{ai_self_persona if ai_self_persona else '（暂无自我画像，将从用户反馈中学习）'}
 
 ## 角色设定
 {role_prompt or '（无特定角色设定，保持自然友好的朋友口吻）'}"""
@@ -1258,24 +1324,43 @@ async def chat_send(req: ChatSendRequest):
                         except:
                             arguments = {}
                         
-                        # 执行工具
-                        tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id)
+                        # 执行工具（传入用户消息用于智能参数修正）
+                        tool_result = execute_tool_call(tool_name, arguments, role_id=req.role_id, user_message=req.message)
                         print(f"📋 工具 {tool_name} 返回结果长度: {len(tool_result)} 字符")
                         print(f"📋 工具 {tool_name} 返回内容预览: {tool_result[:500]}...")
                         tool_results_text.append(f"【工具 {tool_name} 执行结果】:\n{tool_result}")
                     
-                    # 使用 Fallback 策略：因为代理 API 可能不支持标准的 tool_call 第二轮上下文拼接
-                    # 我们不把 message 本身和 role: tool 放进去，而是直接注入一条系统提示
+                    # 检测本轮调用了哪些工具
+                    tools_called_this_round = [tc['function']['name'] for tc in message['tool_calls']]
+                    called_search = 'search_chat_history' in tools_called_this_round
+                    called_get_by_ids = 'get_messages_by_ids' in tools_called_this_round
+                    
+                    # 检测是否是历史细节问题
+                    history_detail_keywords = ["最早", "第一条", "第一天", "原话", "原文", "具体", "详细", "逐字", "标点", "聊了什么", "说了什么"]
+                    is_history_detail = any(kw in req.message for kw in history_detail_keywords)
+                    
                     combined_results = "\n\n".join(tool_results_text)
+                    
+                    # 【关键修复】如果是历史细节问题，且只调用了search没调用get_by_ids，强制要求继续
+                    if is_history_detail and called_search and not called_get_by_ids:
+                        print(f"⚠️ 【强制二级跳转】用户问历史细节，AI只调用了search，强制要求调用get_messages_by_ids读原文！")
+                        messages.append({
+                            "role": "system",
+                            "content": f"系统后台执行了你的查询，结果如下：\n\n{combined_results}\n\n【强制指令】你刚才只调用了search_chat_history，但用户问的是历史细节问题！你必须继续调用 get_messages_by_ids 工具读取原文，然后基于原文回答。从上面的结果中找到 msg_id 范围，然后调用 get_messages_by_ids(start_id=xxx, end_id=xxx)。禁止用总结内容编造答案！"
+                        })
+                        # 不移除工具，让AI继续调用
+                        print(f"🔧 工具执行完毕，强制要求继续调用get_messages_by_ids。")
+                        continue
+                    
+                    # 普通情况：工具执行完毕，让AI回答
                     messages.append({
                         "role": "system",
-                        "content": f"系统后台刚刚执行了你的查询请求，以下是查询结果：\n\n{combined_results}\n\n请结合以上真实数据，直接用自然语言回答用户的上一条问题。不要再次调用工具。"
+                        "content": f"系统后台刚刚执行了你的查询请求，以下是查询结果：\n\n{combined_results}\n\n请结合以上真实数据，直接用自然语言回答用户的上一条问题。"
                     })
                     
-                    # 打印拼接好的消息列表用于调试
-                    print(f"🔧 工具执行完毕，使用 Fallback 策略准备第{round_num+2}轮对话。")
+                    print(f"🔧 工具执行完毕，准备第{round_num+2}轮对话。")
                     
-                    # 关键：移除工具，强制 AI 在下一轮直接回答
+                    # 移除工具，让AI直接回答
                     request_body.pop("tools", None)
                     request_body.pop("tool_choice", None)
                     
@@ -1283,6 +1368,22 @@ async def chat_send(req: ChatSendRequest):
                 else:
                     # 没有工具调用，获取最终回复
                     ai_reply = message.get("content", "")
+                    
+                    # 【硬拦截】检测是否是历史相关问题但AI没调用工具
+                    history_keywords = ["记得", "之前", "以前", "历史", "聊过", "说过", "原话", "原文", "第一条", "最早", "那天", "那时", "上次", "过去", "回忆", "记忆", "打勾", "郑炜杰"]
+                    user_msg_lower = req.message.lower()
+                    is_history_question = any(kw in req.message for kw in history_keywords)
+                    
+                    # 如果是第一轮（round_num == 0）且是历史问题，说明AI没调用工具就直接回答了
+                    if round_num == 0 and is_history_question:
+                        print(f"⚠️ 【硬拦截触发】用户问历史问题但AI没调用工具！强制要求查询。")
+                        # 强制AI重新回答，这次必须调用工具
+                        messages.append({
+                            "role": "system", 
+                            "content": "【系统强制指令】你刚才的回答被拦截了！用户问的是历史相关问题，你必须先调用 search_chat_history 或 get_messages_by_ids 工具查询真实数据，禁止凭空编造！现在重新回答，必须先调用工具。"
+                        })
+                        continue
+                    
                     break
                     
         except Exception as e:
@@ -1308,9 +1409,10 @@ async def chat_send(req: ChatSendRequest):
     except Exception as e:
         print(f"❌ 存储AI回复失败: {e}")
     
-    # 11. 用户画像提取 & 阶段性总结（后台异步执行，不阻塞返回）
+    # 11. 双向画像提取 & 阶段性总结（后台异步执行，不阻塞返回）
     try:
-        await check_profile_needed(req.message, ai_reply, req.role_id)
+        await check_profile_needed(req.message, ai_reply, req.role_id)  # 用户画像
+        await check_ai_self_reflection(req.message, ai_reply, req.role_id)  # AI自我画像
         await check_and_summary(req.role_id)
     except Exception as e:
         print(f"⚠️ 画像/总结处理失败: {e}")
