@@ -1,7 +1,7 @@
 """
 AI Assistant Backend - 新表结构
 """
-import os, re, json, random
+import os, re, json, random, time
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -13,6 +13,13 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import httpx
+
+# 【云端时区强行修正】Render 服务器默认是 0 时区，强制接管为东八区
+os.environ['TZ'] = 'Asia/Shanghai'
+try:
+    time.tzset()
+except AttributeError:
+    pass
 
 load_dotenv()
 
