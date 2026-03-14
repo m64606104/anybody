@@ -1,7 +1,7 @@
 """
 AI Assistant Backend - 新表结构
 """
-import os, re, json, random, time
+import os, re, json, random, time, asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
