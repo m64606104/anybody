@@ -21,8 +21,6 @@ import {
   parseQueryFromText,
   deleteMemoryByContent,
   removeQueryFromText,
-  parseSearchChatFromText,
-  removeSearchChatFromText,
   loadSyncData,
   saveSyncData,
   syncMessage,
@@ -431,9 +429,8 @@ const App: React.FC = () => {
 3. **日历事件**：你可以帮用户创建日程安排
 4. **记账**：你可以帮用户记录支出
 5. **联网搜索**：你可以搜索网络获取最新信息
-6. **查询记忆**：你可以搜索用户的历史记忆（用[QUERY:关键词]查询）
-7. **查询聊天记录**：你可以搜索之前的聊天历史（用[SEARCH_CHAT:关键词]查询，比如查找某人说过的话、某个事件等）
-8. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
+6. **查询记忆**：你可以搜索用户的历史记忆
+7. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
 
 ## 特殊指令格式
 这些指令会被系统自动执行，**指令本身会被隐藏，用户看不到**。你可以自由使用。
@@ -442,7 +439,6 @@ const App: React.FC = () => {
 - 记账：[EXPENSE:50|food|午餐]
 - 搜索网络：[SEARCH:查询内容]
 - 查询记忆：[QUERY:关键词]
-- 查询聊天：[SEARCH_CHAT:查询内容]
 
 **注意：指令会被自动移除，用户只会看到你的自然语言回复。所以不要在回复中提及"我正在搜索"之类的话，直接给出结果即可。**
 ${memoryContext}
@@ -456,7 +452,6 @@ ${rolePrompt || '（无特定角色设定）'}
 请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
 若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
-    // 像 momoyu 一样：默认发送全部消息给 API
     const apiMessages = [
       { role: 'system', content: systemPrompt },
       ...history.map((m) => ({ role: m.role, content: m.content })),
@@ -624,61 +619,12 @@ ${rolePrompt || '（无特定角色设定）'}
       }
     }
     
-    // 解析SEARCH_CHAT指令并搜索本地聊天记录
-    const searchChatKeyword = parseSearchChatFromText(content);
-    if (searchChatKeyword) {
-      console.log('💬 检测到SEARCH_CHAT指令:', searchChatKeyword);
-      try {
-        // 从当前缓存的10000条数据中本地搜索
-        const allMessages = messagesMapRef.current[chatId] || [];
-        const matchedMessages = allMessages.filter(m => 
-          m.content.toLowerCase().includes(searchChatKeyword.toLowerCase())
-        );
-        
-        // 按时间排序，取最近的20条匹配结果
-        const recentMatches = matchedMessages
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .slice(0, 20)
-          .reverse();
-
-        if (recentMatches.length > 0) {
-          const chatSummary = recentMatches
-            .map((m, i) => {
-              const date = new Date(m.createdAt);
-              const timeStr = date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-              const roleName = m.role === 'user' ? '用户' : 'AI';
-              return `[${timeStr}] ${roleName}: ${m.content.slice(0, 50)}${m.content.length > 50 ? '...' : ''}`;
-            })
-            .join('\n');
-            
-          const searchChatMessage: Message = { 
-            id: uuid(), 
-            role: 'assistant', 
-            content: `💬 聊天记录搜索结果 (关于"${searchChatKeyword}"):\n${chatSummary}`, 
-            createdAt: Date.now() 
-          };
-          updateMessages(chatId, (prev) => [...prev, searchChatMessage]);
-        } else {
-          const noResultMessage: Message = { 
-            id: uuid(), 
-            role: 'assistant', 
-            content: `💬 在本地聊天记录中没有找到与"${searchChatKeyword}"相关的内容`, 
-            createdAt: Date.now() 
-          };
-          updateMessages(chatId, (prev) => [...prev, noResultMessage]);
-        }
-      } catch (e) {
-        console.warn('❌ 聊天记录搜索失败:', e);
-      }
-    }
-    
     // 移除所有指令后的干净文本
     let cleanContent = removeReminderFromText(content);
     cleanContent = removeExpenseFromText(cleanContent);
     cleanContent = removeSearchFromText(cleanContent);
     cleanContent = removeEventFromText(cleanContent);
     cleanContent = removeQueryFromText(cleanContent);
-    cleanContent = removeSearchChatFromText(cleanContent);
     if (!cleanContent) return; // 如果只有指令没有其他内容，不显示空消息
     
     const message: Message = { id: uuid(), role: 'assistant', content: cleanContent, createdAt: Date.now() };
@@ -688,17 +634,11 @@ ${rolePrompt || '（无特定角色设定）'}
     // 存储AI回复到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
-    
-    // 同步 AI 回复到云端
-    syncMessage(chatId, { role: 'assistant', content: cleanContent, createdAt: message.createdAt, role_id: chat?.roleId })
-      .then(() => console.log('☁️ AI回复已同步到云端'))
-      .catch(e => console.warn('❌ AI回复同步失败:', e));
-    // 注释掉：聊天记录不应该存入 memories 表，应该只存入 chat_messages 表
-    // storeMemory(cleanContent, 'chat', { 
-    //   chatId, 
-    //   role: 'assistant',
-    //   roleName: role?.name || '未知角色'
-    // }).catch(e => console.warn('存储记忆失败:', e));
+    storeMemory(cleanContent, 'chat', { 
+      chatId, 
+      role: 'assistant',
+      roleName: role?.name || '未知角色'
+    }).catch(e => console.warn('存储记忆失败:', e));
     
     // 如果用户不在该聊天页，加入未读消息
     if (selectedChatId !== chatId || screen !== 'chat') {
@@ -730,26 +670,19 @@ ${rolePrompt || '（无特定角色设定）'}
     console.log('  用户消息:', userMsg);
     console.log('  当前缓冲区:', chatBuffers.current[chatId] || []);
     
-    // 注释掉：聊天记录不应该存入 memories 表，应该只存入 chat_messages 表
-    // const chat = chats.find((c) => c.id === chatId);
-    // const role = roles.find((r) => r.id === chat?.roleId);
-    // storeMemory(userMsg, 'chat', { 
-    //   chatId, 
-    //   role: 'user',
-    //   roleName: role?.name || '未知角色'
-    // }).catch(e => console.warn('存储记忆失败:', e));
-    
+    // 存储用户消息到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
+    const role = roles.find((r) => r.id === chat?.roleId);
+    storeMemory(userMsg, 'chat', { 
+      chatId, 
+      role: 'user',
+      roleName: role?.name || '未知角色'
+    }).catch(e => console.warn('存储记忆失败:', e));
     
     // 立即显示用户消息
     const newMessage: Message = { id: uuid(), role: 'user', content: userMsg, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, newMessage]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: userMsg } : c)));
-    
-    // 同步用户消息到云端
-    syncMessage(chatId, { role: 'user', content: userMsg, createdAt: newMessage.createdAt, role_id: chat?.roleId })
-      .then(() => console.log('☁️ 用户消息已同步到云端'))
-      .catch(e => console.warn('❌ 用户消息同步失败:', e));
     
     // 加入该聊天的缓冲区
     if (!chatBuffers.current[chatId]) {
