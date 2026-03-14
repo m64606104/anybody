@@ -423,7 +423,16 @@ const App: React.FC = () => {
       console.warn('获取记忆/状态失败:', e);
     }
 
+    // 获取当前北京时间
+    const now = new Date();
+    const beijingTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const timeStr = `${beijingTime.getUTCFullYear()}年${beijingTime.getUTCMonth() + 1}月${beijingTime.getUTCDate()}日 ${weekdays[beijingTime.getUTCDay()]} ${String(beijingTime.getUTCHours()).padStart(2, '0')}:${String(beijingTime.getUTCMinutes()).padStart(2, '0')}`;
+
     const systemPrompt = `你是用户的AI助手，拥有以下能力：
+
+## 当前时间
+${timeStr}
 
 ## 你的能力
 1. **记忆能力**：你可以访问用户记忆，下面会提供最近的记忆和截屏数据

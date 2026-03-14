@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- 深蓝色底色 -->
+  <rect width="100" height="100" fill="#1e3a8a" rx="20"/>
+  
+  <!-- 纯白色正方形边框（带圆角） -->
+  <rect x="20" y="20" width="60" height="60" 
+        fill="none" 
+        stroke="#ffffff" 
+        stroke-width="2.5" 
+        rx="6"/>
+  
+  <!-- 数据脉冲 - 三个不同大小的圆点 -->
+  <!-- 大圆点 -->
+  <circle cx="40" cy="50" r="5" fill="#ffffff"/>
+  
+  <!-- 中圆点 -->
+  <circle cx="50" cy="45" r="3.5" fill="#ffffff"/>
+  
+  <!-- 小圆点 -->
+  <circle cx="60" cy="52" r="2.5" fill="#ffffff"/>
+  
+  <!-- 连接线（细线相连，像星座） -->
+  <line x1="40" y1="50" x2="50" y2="45" 
+        stroke="#ffffff" 
+        stroke-width="1.2" 
+        opacity="0.8"/>
+  
+  <line x1="50" y1="45" x2="60" y2="52" 
+        stroke="#ffffff" 
+        stroke-width="1.2" 
+        opacity="0.8"/>
+  
+  <!-- 微小的脉冲效果（可选的装饰性元素） -->
+  <circle cx="40" cy="50" r="7" 
+          fill="none" 
+          stroke="#ffffff" 
+          stroke-width="0.8" 
+          opacity="0.3"/>
+  
+  <circle cx="60" cy="52" r="4" 
+          fill="none" 
+          stroke="#ffffff" 
+          stroke-width="0.6" 
+          opacity="0.25"/>
+</svg>
