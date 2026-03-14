@@ -1729,13 +1729,22 @@ async def sync_message(chat_id: str, req: SyncMessageRequest):
     """
     接收前端同步来的单条消息，存入数据库
     并触发异步的画像提取和记忆反思
+    支持去重：基于 chat_id + created_at + sender 判断是否已存在
     """
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
         
     try:
-        # 1. 存入 chat_messages 表
+        # 1. 转换时间戳
         time_iso = datetime.fromtimestamp(req.createdAt / 1000).isoformat()
+        
+        # 2. 去重检查：基于 chat_id + created_at + sender 判断是否已存在
+        existing = supabase.table("chat_messages").select("id").eq("chat_id", chat_id).eq("created_at", time_iso).eq("sender", req.role).limit(1).execute()
+        if existing.data:
+            # 已存在，跳过
+            return {"success": True, "skipped": True, "reason": "already_exists"}
+        
+        # 3. 存入 chat_messages 表
         supabase.table("chat_messages").insert({
             "chat_id": chat_id,
             "role_id": req.role_id,
