@@ -456,9 +456,23 @@ ${rolePrompt || '（无特定角色设定）'}
 请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
 若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
+    // 限制传给 AI 的历史条数，避免 token 超限
+    // 只传最近 50 条，更早的记录通过 SEARCH_CHAT 指令搜索
+    const MAX_HISTORY = 50;
+    const recentHistory = history.slice(-MAX_HISTORY);
+    const olderHistoryCount = history.length - recentHistory.length;
+    
+    // 如果有更早的记录，在系统提示词中告知 AI
+    let historyNote = '';
+    if (olderHistoryCount > 0) {
+      historyNote = `\n\n## 聊天记录说明\n你目前可以看到最近 ${recentHistory.length} 条对话。还有 ${olderHistoryCount} 条更早的记录在本地数据库中。\n如果用户要查找更早的内容，请使用 [SEARCH_CHAT:关键词] 指令搜索完整历史。`;
+    }
+    
+    const finalSystemPrompt = systemPrompt + historyNote;
+    
     const apiMessages = [
-      { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'system', content: finalSystemPrompt },
+      ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
     ];
     
     console.log('%c[DEBUG] callModelForChat - 发送给AI的消息', 'color: #4ecdc4; font-weight: bold');
