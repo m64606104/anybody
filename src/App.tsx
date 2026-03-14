@@ -456,38 +456,10 @@ ${rolePrompt || '（无特定角色设定）'}
 请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
 若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
 
-    // 限制传给 AI 的历史条数，避免 token 超限
-    // 最近 50 条作为 messages 传给 AI，更早的压缩成摘要放在系统提示词里
-    const MAX_RECENT = 50;
-    const MAX_OLDER_SUMMARY = 200; // 最多取200条早期记录做摘要
-    
-    const recentHistory = history.slice(-MAX_RECENT);
-    const olderHistory = history.slice(0, -MAX_RECENT).slice(-MAX_OLDER_SUMMARY);
-    const totalOlderCount = Math.max(0, history.length - MAX_RECENT);
-    
-    // 把更早的历史压缩成摘要放在系统提示词里
-    let historyContext = '';
-    if (olderHistory.length > 0) {
-      // 压缩早期历史：每条只取前80字，并标注时间
-      const olderSummary = olderHistory.map((m, i) => {
-        const date = new Date(m.createdAt);
-        const timeStr = date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-        const role = m.role === 'user' ? '用户' : 'AI';
-        const content = m.content.slice(0, 80) + (m.content.length > 80 ? '...' : '');
-        return `[${timeStr}] ${role}: ${content}`;
-      }).join('\n');
-      
-      historyContext = `\n\n## 早期聊天记录摘要（共${totalOlderCount}条，以下是最近${olderHistory.length}条的摘要）
-${olderSummary}
-
-❗ 以上是压缩摘要，如需查看原文，请用 [SEARCH_CHAT:关键词] 搜索`;
-    }
-    
-    const finalSystemPrompt = systemPrompt + historyContext;
-    
+    // 像 momoyu 一样：默认发送全部消息给 API
     const apiMessages = [
-      { role: 'system', content: finalSystemPrompt },
-      ...recentHistory.map((m) => ({ role: m.role, content: m.content })),
+      { role: 'system', content: systemPrompt },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
     ];
     
     console.log('%c[DEBUG] callModelForChat - 发送给AI的消息', 'color: #4ecdc4; font-weight: bold');
