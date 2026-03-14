@@ -194,6 +194,41 @@ def get_ai_self_persona():
         return ""
 
 
+async def sync_persona_from_history(history_text: str):
+    """实时画像同步：从读取到的历史原文中提取性格要求，自动写入ai_self_persona"""
+    if not supabase or not history_text:
+        return
+    
+    # 检测是否包含性格相关的关键词
+    persona_keywords = ["太假", "不自然", "别这样", "你应该", "希望你", "语气", "说话方式", "不要这样", "讨厌你这样", "喜欢你这样", "自然一点", "真诚一点"]
+    if not any(kw in history_text for kw in persona_keywords):
+        return
+    
+    try:
+        prompt = f"""分析以下历史对话，提取用户对AI的性格要求或反馈。
+如果有，用一句话总结AI应该如何调整（如"语气需要更自然，不要太刻意开朗"）。
+如果没有明确的性格要求，只回复"无"。
+
+历史对话：
+{history_text[:2000]}
+
+提取结果："""
+        
+        result = await call_ai("你是AI自我反省助手，帮助AI理解用户对它的期望。只输出结果，不要解释。", prompt)
+        result = result.strip()
+        
+        if result and result != "无" and len(result) > 2 and len(result) < 200:
+            # 存入 ai_self_persona 表
+            supabase.table("ai_self_persona").insert({
+                "trait_category": "历史反馈",
+                "trait_detail": result,
+                "confidence_score": 0.9
+            }).execute()
+            print(f"🧠 【实时画像同步】从历史中提取: {result}")
+    except Exception as e:
+        print(f"⚠️ 实时画像同步失败: {e}")
+
+
 async def update_core_memory(new_chat_text: str, role_id: str = None):
     """增量更新核心记忆：基于新对话内容，更新用户画像、说话偏好等"""
     if not supabase:
@@ -1241,11 +1276,21 @@ async def chat_send(req: ChatSendRequest):
 ## 【核心记忆档案 - 你与用户的过往】
 {core_memory if core_memory else '（暂无核心记忆，请运行 revive_ai_memory.py 生成）'}
 
-## 【AI自我画像 - 你应该是什么样的人】
-{ai_self_persona if ai_self_persona else '（暂无自我画像，将从用户反馈中学习）'}
-
 ## 角色设定
 {role_prompt or '（无特定角色设定，保持自然友好的朋友口吻）'}"""
+
+    # 【权重最高】AI自我画像放在系统提示词最前面，作为性格准则
+    if ai_self_persona:
+        persona_prefix = f"""【最高优先级 - AI性格准则】
+以下是用户对你的明确要求和反馈，你必须在每一句回复中都遵守这些准则：
+
+{ai_self_persona}
+
+这些准则的优先级高于一切。如果你的默认行为与这些准则冲突，必须以这些准则为准。
+---
+
+"""
+        system_prompt = persona_prefix + system_prompt
 
     # 7. 构建消息历史
     messages = [{"role": "system", "content": system_prompt}]
@@ -1352,11 +1397,38 @@ async def chat_send(req: ChatSendRequest):
                         print(f"🔧 工具执行完毕，强制要求继续调用get_messages_by_ids。")
                         continue
                     
-                    # 普通情况：工具执行完毕，让AI回答
-                    messages.append({
-                        "role": "system",
-                        "content": f"系统后台刚刚执行了你的查询请求，以下是查询结果：\n\n{combined_results}\n\n请结合以上真实数据，直接用自然语言回答用户的上一条问题。"
-                    })
+                    # 【读后灵魂重塑】如果AI刚才读取了历史原文，强制触发性格对齐
+                    if called_get_by_ids:
+                        print(f"🧠 【读后灵魂重塑】AI读取了历史原文，触发性格对齐机制！")
+                        # 【实时画像同步】从历史原文中提取性格要求，自动写入ai_self_persona
+                        asyncio.create_task(sync_persona_from_history(combined_results))
+                        messages.append({
+                            "role": "system",
+                            "content": f"""系统后台执行了你的查询，结果如下：
+
+{combined_results}
+
+【灵魂重塑指令 - 最高优先级！】
+你刚才读取了历史原文。现在你必须执行"性格对齐"：
+
+1. **自我检测**：上面的原文中是否包含用户对你语气的要求、性格的设定、或重要的约定？
+   - 如果用户说过"太假"、"不自然"、"别这样说"等，你必须立即调整你的说话方式
+   - 如果用户表达过某种偏好或禁忌，你必须在回复中体现出来
+
+2. **入戏要求**：你不是在"汇报搜索结果"，你是在"回忆我们的过往"。
+   - 用第一人称说话："我记得那时候..."、"当时你跟我说..."
+   - 带着情感和温度，不要像复印机一样冷冰冰地复述
+
+3. **性格同步**：如果原文中有关于你应该如何表现的信息，你必须在这一轮回复中就体现出来，而不是"下次再改"。
+
+现在，基于上面的原文，用你调整后的语气和性格回答用户的问题。"""
+                        })
+                    else:
+                        # 普通情况：工具执行完毕，让AI回答
+                        messages.append({
+                            "role": "system",
+                            "content": f"系统后台刚刚执行了你的查询请求，以下是查询结果：\n\n{combined_results}\n\n请结合以上真实数据，直接用自然语言回答用户的上一条问题。"
+                        })
                     
                     print(f"🔧 工具执行完毕，准备第{round_num+2}轮对话。")
                     
