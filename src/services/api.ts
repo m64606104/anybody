@@ -533,6 +533,18 @@ export async function saveSyncData(data: SyncData): Promise<{
 /**
  * 同步单条消息（实时同步）
  */
+export function parseSearchChatFromText(text: string): string | null {
+  const match = text.match(/\[SEARCH_CHAT:([^\]]+)\]/);
+  return match ? match[1] : null;
+}
+
+/**
+ * 从文本中移除SEARCH_CHAT指令
+ */
+export function removeSearchChatFromText(text: string): string {
+  return text.replace(/\[SEARCH_CHAT:[^\]]+\]/g, '').trim();
+}
+
 export async function syncMessage(chatId: string, message: any): Promise<{
   success: boolean;
 }> {

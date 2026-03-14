@@ -1718,6 +1718,51 @@ async def sync_load():
         return {"found": True, "data": {k: r.data[0].get(k) for k in ["chats", "messages", "roles", "api_settings", "chat_settings", "user_profile", "updated_at"]}}
     return {"found": False}
 
+class SyncMessageRequest(BaseModel):
+    role: str
+    content: str
+    createdAt: int
+    role_id: Optional[str] = None
+
+@app.post("/sync/message")
+async def sync_message(chat_id: str, req: SyncMessageRequest):
+    """
+    接收前端同步来的单条消息，存入数据库
+    并触发异步的画像提取和记忆反思
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+        
+    try:
+        # 1. 存入 chat_messages 表
+        time_iso = datetime.fromtimestamp(req.createdAt / 1000).isoformat()
+        supabase.table("chat_messages").insert({
+            "chat_id": chat_id,
+            "role_id": req.role_id,
+            "sender": req.role,
+            "content": req.content,
+            "created_at": time_iso
+        }).execute()
+        
+        # 2. 如果是 AI 回复，尝试提取画像（异步）
+        if req.role == "assistant":
+            # 获取上一条用户消息用于成对分析
+            r = supabase.table("chat_messages").select("content").eq("chat_id", chat_id).eq("sender", "user").order("created_at", desc=True).limit(1).execute()
+            user_msg = r.data[0]["content"] if r.data else ""
+            
+            if user_msg:
+                # 异步触发画像提取
+                asyncio.create_task(check_profile_needed(user_msg, req.content, req.role_id))
+                asyncio.create_task(check_ai_self_reflection(user_msg, req.content, req.role_id))
+                
+        # 3. 检查是否需要阶段总结（每30条）
+        asyncio.create_task(check_and_summary(req.role_id, 30))
+        
+        return {"success": True}
+    except Exception as e:
+        print(f"❌ 同步消息失败: {e}")
+        return {"success": False, "error": str(e)}
+
 @app.post("/sync/save")
 async def sync_save(d: SyncData):
     data = {"user_id": "default_user", "updated_at": datetime.utcnow().isoformat()}
