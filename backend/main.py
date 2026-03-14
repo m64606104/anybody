@@ -1737,9 +1737,14 @@ async def sync_message(chat_id: str, req: SyncMessageRequest):
     try:
         # 1. 转换时间戳
         time_iso = datetime.fromtimestamp(req.createdAt / 1000).isoformat()
+        time_obj = datetime.fromtimestamp(req.createdAt / 1000)
         
-        # 2. 去重检查：基于 chat_id + created_at + sender 判断是否已存在
-        existing = supabase.table("chat_messages").select("id").eq("chat_id", chat_id).eq("created_at", time_iso).eq("sender", req.role).limit(1).execute()
+        # 2. 去重检查：基于时间范围(±2秒) + content + sender
+        # 允许用户在不同时间说同样的话，但避免重复导入
+        time_before = (time_obj - timedelta(seconds=2)).isoformat()
+        time_after = (time_obj + timedelta(seconds=2)).isoformat()
+        
+        existing = supabase.table("chat_messages").select("id").eq("chat_id", chat_id).eq("content", req.content).eq("sender", req.role).gte("created_at", time_before).lte("created_at", time_after).limit(1).execute()
         if existing.data:
             # 已存在，跳过
             return {"success": True, "skipped": True, "reason": "already_exists"}
