@@ -688,6 +688,11 @@ ${rolePrompt || '（无特定角色设定）'}
     // 存储AI回复到记忆（异步，不阻塞）
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
+    
+    // 同步 AI 回复到云端
+    syncMessage(chatId, { role: 'assistant', content: cleanContent, createdAt: message.createdAt, role_id: chat?.roleId })
+      .then(() => console.log('☁️ AI回复已同步到云端'))
+      .catch(e => console.warn('❌ AI回复同步失败:', e));
     storeMemory(cleanContent, 'chat', { 
       chatId, 
       role: 'assistant',
@@ -737,6 +742,11 @@ ${rolePrompt || '（无特定角色设定）'}
     const newMessage: Message = { id: uuid(), role: 'user', content: userMsg, createdAt: Date.now() };
     updateMessages(chatId, (prev) => [...prev, newMessage]);
     setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, lastMessage: userMsg } : c)));
+    
+    // 同步用户消息到云端
+    syncMessage(chatId, { role: 'user', content: userMsg, createdAt: newMessage.createdAt, role_id: chat?.roleId })
+      .then(() => console.log('☁️ 用户消息已同步到云端'))
+      .catch(e => console.warn('❌ 用户消息同步失败:', e));
     
     // 加入该聊天的缓冲区
     if (!chatBuffers.current[chatId]) {
