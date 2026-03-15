@@ -273,15 +273,18 @@ const App: React.FC = () => {
     }
   }, [screen, currentMessages]);
 
-  // 轮询主动消息（每30秒检查一次）- 主动消息通过Bark推送，这里只是同步到聊天记录
+// 轮询主动消息（每30秒检查一次）- 后端发送，前端同步到聊天记录
   useEffect(() => {
     const pollProactiveMessages = async () => {
       try {
         const result = await getPendingProactiveMessage();
         if (result.has_message && result.message) {
           console.log('💬 收到主动消息:', result.message);
-          // 使用第一个聊天作为目标
-          const targetChat = chats[0];
+          // 找到对应角色的聊天
+          const targetChat = chats.find(c => {
+            const role = roles.find(r => r.id === c.roleId);
+            return role?.name === result.role;
+          }) || chats[0];
           
           if (targetChat) {
             // 推送主动消息到聊天
@@ -302,6 +305,8 @@ const App: React.FC = () => {
                 [targetChat.id]: [...(prev[targetChat.id] || []), message],
               }));
             }
+            // 同步到云端
+            await syncMessage(targetChat.id, message);
           }
         }
       } catch (e) {
@@ -314,7 +319,7 @@ const App: React.FC = () => {
     pollProactiveMessages(); // 立即执行一次
     
     return () => clearInterval(intervalId);
-  }, [chats, selectedChatId, screen]);
+  }, [chats, roles, selectedChatId, screen]);
 
   const handleNav = (target: Screen) => setScreen(target);
 

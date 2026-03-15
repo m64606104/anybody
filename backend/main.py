@@ -462,8 +462,11 @@ def get_all_context(role_id: str = None):
     expenses = supabase.table("expenses").select("amount,category,description,date").order("created_at", desc=True).limit(10).execute().data or []
     expense_list = "\n".join([f"- ¥{e['amount']} {e['category']} {e.get('description','')} ({e['date']})" for e in expenses]) if expenses else "无"
     
-    # 最近主动消息（避免重复）
-    proactive = supabase.table("proactive_messages").select("content,created_at").order("created_at", desc=True).limit(5).execute().data or []
+    # 最近主动消息（避免重复）- 按role_id过滤
+    proactive_query = supabase.table("proactive_messages").select("content,created_at")
+    if role_id:
+        proactive_query = proactive_query.eq("role_id", role_id)
+    proactive = proactive_query.order("created_at", desc=True).limit(5).execute().data or []
     proactive_list = "\n".join([f"- {p['content'][:60]}" for p in proactive]) if proactive else "无"
     
     return f"""【当前时间】
@@ -543,16 +546,6 @@ async def proactive_thinking():
         if minutes_since < next_interval:
             return  # 还没到下次发送时间
     
-    # 获取完整资料库
-    context = get_all_context()
-    
-    prompt = f"""{context}
-
----
-以上是你的资料库，你可以自由参考任何内容。
-判断是否发消息：不发回复PASS，发回复MESSAGE:内容
-注意避免和【最近主动消息】重复。"""
-    
     roles = get_all_roles()
     if not roles: return
     active = beh.get("current_active_role_id")
@@ -565,6 +558,16 @@ async def proactive_thinking():
     current_time_str = now_beijing.strftime(f"%Y年%m月%d日 {weekdays[now_beijing.weekday()]} %H:%M")
     
     for role in roles:
+        # 为每个角色获取专属的上下文（包含该角色的聊天记录、记忆等）
+        context = get_all_context(role_id=role.get("id"))
+        
+        prompt = f"""{context}
+
+---
+以上是你的资料库，你可以自由参考任何内容。
+判断是否发消息：不发回复PASS，发回复MESSAGE:内容
+注意避免和【最近主动消息】重复。"""
+        
         sp = build_role_prompt(role)
         # 系统提示词与聊天对齐，让AI知道所有可用信息
         sys_prompt = f"""当前时间：{current_time_str}
