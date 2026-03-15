@@ -425,29 +425,38 @@ const App: React.FC = () => {
       const reader = resp.body?.getReader();
       const decoder = new TextDecoder();
       let fullReply = '';
+      let buffer = ''; // 缓冲区，处理分块数据
 
       if (reader) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          
+          // 保留最后一个不完整的行
+          buffer = lines.pop() || '';
 
           for (const line of lines) {
             if (line.startsWith('data: ')) {
+              const dataStr = line.slice(6).trim();
+              if (!dataStr) continue;
+              
               try {
-                const data = JSON.parse(line.slice(6));
+                const data = JSON.parse(dataStr);
                 if (data.content) {
                   fullReply += data.content;
                   pushAssistantChunkWithUnread(chatId, data.content);
+                  console.log('📝 收到内容:', data.content.slice(0, 50));
                 } else if (data.done) {
                   console.log('✅ 流式接收完成');
                 } else if (data.error) {
+                  console.error('❌ 后端错误:', data.error);
                   pushAssistantChunkWithUnread(chatId, `错误: ${data.error}`);
                 }
               } catch (e) {
-                // 忽略 JSON 解析错误
+                console.warn('⚠️ JSON 解析失败:', dataStr, e);
               }
             }
           }
@@ -457,6 +466,11 @@ const App: React.FC = () => {
       setIsTyping(false);
       console.log('%c[DEBUG] 完整回复已接收', 'color: #6c5ce7; font-weight: bold');
       console.log('  回复长度:', fullReply.length);
+      
+      if (fullReply.length === 0) {
+        console.error('❌ 警告：后端返回空回复，请检查后端日志');
+        pushAssistantChunkWithUnread(chatId, '（后端未返回内容，请检查后端日志）');
+      }
     } catch (e: any) {
       pushAssistantChunkWithUnread(chatId, `调用异常：${e?.message || e}`);
       setIsTyping(false);

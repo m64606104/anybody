@@ -1980,6 +1980,9 @@ def remove_commands(text: str) -> str:
 @app.post("/chat/stream")
 async def chat_stream(req: ChatStreamRequest):
     """混合语境注入模式的流式聊天接口"""
+    print(f"🔵 收到流式聊天请求: chat_id={req.chat_id}, message={req.message[:50]}...")
+    print(f"📊 历史消息数量: {len(req.history_messages) if req.history_messages else 0}")
+    
     if not supabase:
         raise HTTPException(status_code=500, detail="Supabase not configured")
     
@@ -1991,6 +1994,7 @@ async def chat_stream(req: ChatStreamRequest):
             "sender": "user",
             "content": req.message
         }).execute()
+        print(f"✅ 用户消息已存储")
     except Exception as e:
         print(f"⚠️ 存储用户消息失败: {e}")
     
@@ -2054,6 +2058,7 @@ async def chat_stream(req: ChatStreamRequest):
     # 6. 流式生成器
     async def generate():
         full_reply = ""
+        print(f"🚀 开始调用 OpenAI API: model={OPENAI_MODEL}, messages_count={len(messages)}")
         try:
             async with httpx.AsyncClient() as client:
                 async with client.stream(
@@ -2063,10 +2068,20 @@ async def chat_stream(req: ChatStreamRequest):
                     json={"model": OPENAI_MODEL, "messages": messages, "stream": True, "max_tokens": 4096},
                     timeout=120.0
                 ) as response:
+                    print(f"📡 OpenAI 响应状态: {response.status_code}")
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        error_msg = f"OpenAI API 错误 {response.status_code}: {error_text.decode()}"
+                        print(f"❌ {error_msg}")
+                        yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                        return
+                    
+                    chunk_count = 0
                     async for line in response.aiter_lines():
                         if line.startswith("data: "):
                             data_str = line[6:]
                             if data_str == "[DONE]":
+                                print(f"✅ OpenAI 流式传输完成，共 {chunk_count} 个分块")
                                 break
                             try:
                                 data = json.loads(data_str)
@@ -2074,11 +2089,13 @@ async def chat_stream(req: ChatStreamRequest):
                                 content = delta.get("content", "")
                                 if content:
                                     full_reply += content
+                                    chunk_count += 1
                                     yield f"data: {json.dumps({'content': content})}\n\n"
                             except json.JSONDecodeError:
                                 continue
         except Exception as e:
             error_msg = f"生成失败: {str(e)}"
+            print(f"❌ 流式生成异常: {error_msg}")
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
             full_reply = error_msg
         
