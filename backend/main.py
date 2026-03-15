@@ -29,6 +29,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 BARK_KEY = os.getenv("BARK_KEY", "")
+PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN", "")
 
 supabase: Client = None
 scheduler = AsyncIOScheduler()
@@ -101,6 +102,48 @@ async def call_ai(sys: str, user: str = "") -> str:
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
             json={"model": OPENAI_MODEL, "messages": msgs}, timeout=30)
         return r.json()["choices"][0]["message"]["content"]
+
+async def push_notification(title: str, content: str, role_name: str = None, sound: str = "shake"):
+    """统一的消息推送函数，支持 Bark 和 PushPlus"""
+    tasks = []
+    
+    # Bark 推送（iOS）
+    if BARK_KEY:
+        async def bark_push():
+            try:
+                async with httpx.AsyncClient() as c:
+                    url = f"https://api.day.app/{BARK_KEY}/{quote(title)}/{quote(content)}?sound={sound}"
+                    if role_name:
+                        url += f"&group={quote(role_name)}"
+                    await c.get(url, timeout=10)
+                    print(f"📤 Bark推送成功: {title}")
+            except Exception as e:
+                print(f"⚠️ Bark推送失败: {e}")
+        tasks.append(bark_push())
+    
+    # PushPlus 推送（微信）
+    if PUSHPLUS_TOKEN:
+        async def pushplus_push():
+            try:
+                async with httpx.AsyncClient() as c:
+                    await c.post(
+                        "http://www.pushplus.plus/send",
+                        json={
+                            "token": PUSHPLUS_TOKEN,
+                            "title": title,
+                            "content": content,
+                            "template": "html"
+                        },
+                        timeout=10
+                    )
+                    print(f"📤 PushPlus推送成功: {title}")
+            except Exception as e:
+                print(f"⚠️ PushPlus推送失败: {e}")
+        tasks.append(pushplus_push())
+    
+    # 并发执行所有推送
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 def get_all_roles():
     if not supabase: return []
@@ -511,11 +554,16 @@ async def check_reminders():
     now = datetime.utcnow()
     r = supabase.table("reminders").select("*").eq("is_done", False).eq("is_pushed", False).lte("remind_at", now.isoformat()).execute()
     for rem in r.data or []:
-        if BARK_KEY:
-            try:
-                async with httpx.AsyncClient() as c:
-                    await c.get(f"https://api.day.app/{BARK_KEY}/⏰/{quote(rem['content'])}?sound=alarm", timeout=10)
-            except: pass
+        # 推送闹钟提醒通知
+        try:
+            await push_notification(
+                title="⏰ 提醒",
+                content=rem['content'],
+                sound="alarm"
+            )
+        except Exception as e:
+            print(f"⚠️ 闹钟推送失败: {e}")
+        
         if rem.get("repeat"):
             t = datetime.fromisoformat(rem["remind_at"].replace("Z",""))
             d = {"daily": 1, "weekly": 7, "monthly": 30}
@@ -595,11 +643,16 @@ async def proactive_thinking():
     if msg and winner:
         name = winner.get("name", "AI")
         supabase.table("proactive_messages").insert({"role_id": winner.get("id"), "role_name": name, "content": msg, "trigger": "proactive"}).execute()
-        if BARK_KEY:
-            try:
-                async with httpx.AsyncClient() as c:
-                    await c.get(f"https://api.day.app/{BARK_KEY}/{quote(name)}/{quote(msg)}?sound=shake&group={quote(name)}", timeout=10)
-            except: pass
+        # 推送主动消息通知
+        try:
+            await push_notification(
+                title=f"💬 {name}",
+                content=msg,
+                role_name=name,
+                sound="shake"
+            )
+        except Exception as e:
+            print(f"⚠️ 主动消息推送失败: {e}")
 
 async def update_persona():
     if not supabase: return
@@ -669,9 +722,13 @@ async def upload_gps(d: GPSData):
                         "role_id": role.get("id"), "role_name": name,
                         "content": msg, "trigger": "charging"
                     }).execute()
-                    if BARK_KEY:
-                        async with httpx.AsyncClient() as c:
-                            await c.get(f"https://api.day.app/{BARK_KEY}/{quote(name)}/{quote(msg)}?sound=shake", timeout=10)
+                    # 推送充电触发消息通知
+                    await push_notification(
+                        title=f"🔋 {name}",
+                        content=msg,
+                        role_name=name,
+                        sound="shake"
+                    )
                     print(f"💬 充电触发消息: {msg[:50]}...")
         except Exception as e:
             print(f"⚠️ 充电触发消息失败: {e}")
@@ -1499,16 +1556,17 @@ async def chat_send(req: ChatSendRequest):
     except Exception as e:
         print(f"⚠️ 画像/总结处理失败: {e}")
     
-    # 12. 推送Bark通知
-    if BARK_KEY:
-        try:
-            push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
-            async with httpx.AsyncClient() as c:
-                url = f"https://api.day.app/{BARK_KEY}/【{role_name}】/{quote(push_content)}?sound=shake&group={quote(role_name)}"
-                resp = await c.get(url, timeout=10)
-                print(f"📤 Bark推送: [{role_name}] 状态={resp.status_code}")
-        except Exception as e:
-            print(f"⚠️ Bark推送失败: {e}")
+    # 12. 推送通知（Bark + PushPlus）
+    try:
+        push_content = ai_reply[:100] + ("..." if len(ai_reply) > 100 else "")
+        await push_notification(
+            title=f"【{role_name}】",
+            content=push_content,
+            role_name=role_name,
+            sound="shake"
+        )
+    except Exception as e:
+        print(f"⚠️ 推送通知失败: {e}")
     
     return {
         "success": True,
@@ -1830,7 +1888,22 @@ async def bark_send(req: BarkRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "supabase": "connected" if supabase else "no", "bark": "configured" if BARK_KEY else "no", "version": "v20260314-function-calling"}
+    return {
+        "status": "ok", 
+        "supabase": "connected" if supabase else "no", 
+        "bark": "configured" if BARK_KEY else "no",
+        "pushplus": "configured" if PUSHPLUS_TOKEN else "no",
+        "version": "v20260315-unified-push"
+    }
+
+@app.post("/notification/test")
+async def test_notification(title: str = "测试通知", content: str = "这是一条测试消息"):
+    """测试推送通知功能"""
+    try:
+        await push_notification(title, content, sound="shake")
+        return {"success": True, "message": "推送成功，请检查手机"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.get("/debug/prompt")
 async def debug_prompt(role_id: str = None):
