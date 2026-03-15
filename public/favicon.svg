@@ -1,21 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- 白色背景 -->
-  <rect width="100" height="100" fill="#ffffff" rx="20"/>
-  
-  <!-- 小熊爪图标 - 标准布局 -->
-  <!-- 主掌垫（大椭圆，在下方） -->
-  <ellipse cx="50" cy="60" rx="20" ry="22" fill="#3b82f6"/>
-  
-  <!-- 四个脚趾（小圆，在上方呈弧形排列） -->
-  <!-- 最左脚趾 -->
-  <circle cx="28" cy="35" r="9" fill="#3b82f6"/>
-  
-  <!-- 左中脚趾 -->
-  <circle cx="42" cy="28" r="8" fill="#3b82f6"/>
-  
-  <!-- 右中脚趾 -->
-  <circle cx="58" cy="28" r="8" fill="#3b82f6"/>
-  
-  <!-- 最右脚趾 -->
-  <circle cx="72" cy="35" r="9" fill="#3b82f6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <circle cx="50" cy="50" r="50" fill="#E6F2FF" />
+  <!-- 掌心 -->
+  <path d="M 30,60 C 20,45 40,35 50,45 C 60,35 80,45 70,60 C 60,75 40,75 30,60 Z" fill="#3B82F6" />
+  <!-- 左边小脚趾 -->
+  <circle cx="25" cy="35" r="10" fill="#3B82F6" />
+  <!-- 中间偏左脚趾 -->
+  <circle cx="40" cy="20" r="11" fill="#3B82F6" />
+  <!-- 中间偏右脚趾 -->
+  <circle cx="60" cy="20" r="11" fill="#3B82F6" />
+  <!-- 右边小脚趾 -->
+  <circle cx="75" cy="35" r="10" fill="#3B82F6" />
 </svg>
