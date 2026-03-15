@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>生成图标</title>
+</head>
+<body>
+  <canvas id="canvas" width="180" height="180"></canvas>
+  <br>
+  <button onclick="download()">下载 PNG</button>
+  
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // 白色背景
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 180, 180);
+    
+    // 蓝色小熊爪
+    ctx.fillStyle = '#3b82f6';
+    
+    // 主掌垫（大椭圆）
+    ctx.beginPath();
+    ctx.ellipse(90, 108, 36, 40, 0, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // 四个脚趾
+    // 最左脚趾
+    ctx.beginPath();
+    ctx.arc(50, 63, 16, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // 左中脚趾
+    ctx.beginPath();
+    ctx.arc(76, 50, 14, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // 右中脚趾
+    ctx.beginPath();
+    ctx.arc(104, 50, 14, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    // 最右脚趾
+    ctx.beginPath();
+    ctx.arc(130, 63, 16, 0, 2 * Math.PI);
+    ctx.fill();
+    
+    function download() {
+      const link = document.createElement('a');
+      link.download = 'apple-touch-icon.png';
+      link.href = canvas.toDataURL();
+      link.click();
+    }
+  </script>
+</body>
+</html>
