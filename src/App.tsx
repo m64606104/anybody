@@ -402,8 +402,20 @@ const App: React.FC = () => {
 
     try {
       // 调用后端流式接口
-      const backendUrl = apiSettings.baseUrl?.replace('/v1', '') || 'https://anybody.onrender.com';
-      const resp = await fetch(`${backendUrl}/chat/stream`, {
+      let backendUrl = apiSettings.baseUrl || 'https://anybody.onrender.com';
+      // 移除 /v1 后缀（如果存在）
+      backendUrl = backendUrl.replace(/\/v1\/?$/, '');
+      const streamUrl = `${backendUrl}/chat/stream`;
+      
+      console.log('🌐 调用后端流式接口:', streamUrl);
+      console.log('📦 请求体:', {
+        chat_id: chatId,
+        role_id: chat?.roleId,
+        message_length: history[history.length - 1]?.content?.length,
+        history_count: historyMessages.length - 1
+      });
+      
+      const resp = await fetch(streamUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -415,8 +427,12 @@ const App: React.FC = () => {
         })
       });
 
+      console.log('📡 后端响应状态:', resp.status, resp.statusText);
+      
       if (!resp.ok) {
-        pushAssistantChunkWithUnread(chatId, `后端调用失败：${resp.status}`);
+        const errorText = await resp.text();
+        console.error('❌ 后端错误响应:', errorText);
+        pushAssistantChunkWithUnread(chatId, `后端调用失败：${resp.status} - ${errorText}`);
         setIsTyping(false);
         return;
       }
