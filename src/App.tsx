@@ -363,170 +363,100 @@ const App: React.FC = () => {
     void callModelForChat(chatId, history);
   };
 
-  // 独立的AI调用，直接调用AI API（旧版本方式，完整历史传给AI）
+  // 混合语境注入模式：调用后端流式接口
   const callModelForChat = async (chatId: string, history: Message[]) => {
-    if (!apiSettings.apiKey || !apiSettings.model || !apiSettings.baseUrl) {
-      pushAssistantChunkWithUnread(chatId, '请先在设置页配置 Base URL、API Key 和模型');
-      setIsTyping(false);
-      return;
-    }
-
     const chat = chats.find((c) => c.id === chatId);
     const role = roles.find((r) => r.id === chat?.roleId);
-    const rolePrompt = buildRolePrompt(role);
-
-    // 🔄 自动查询最近记忆和用户状态，注入到AI上下文
-    let memoryContext = '';
-    let userStatusContext = '';
-    let screenCaptureContext = '';
     
-    try {
-      // 按类型分别获取记忆（避免互相挤掉）
-      const memoriesResult = await getMemoriesByTypes(20, 50, 10);
-      
-      // 截屏数据（微信、美团、小红书、咸鱼等）
-      if (memoriesResult.screen_captures?.length) {
-        const captureList = memoriesResult.screen_captures
-          .map(m => {
-            const app = m.metadata?.app || '未知应用';
-            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
-            return `- [${app} ${time}] ${m.content.slice(0, 500)}`;
-          })
-          .join('\n');
-        screenCaptureContext = `\n## 用户最近的应用截屏内容\n${captureList}`;
-      }
-      
-      // GPS数据
-      if (memoriesResult.gps?.length) {
-        const gpsList = memoriesResult.gps
-          .map(m => {
-            const addr = m.metadata?.address || '未知位置';
-            const time = m.created_at ? new Date(m.created_at).toLocaleString('zh-CN') : '';
-            return `- [${time}] ${addr}`;
-          })
-          .join('\n');
-        memoryContext += `\n## 用户最近的位置记录\n${gpsList}`;
-      }
-      
-      // 获取用户状态（位置、电量等）
-      const status = await getUserStatus();
-      if (status.location || status.battery) {
-        const parts = [];
-        if (status.location?.address) parts.push(`位置: ${status.location.address}`);
-        if (status.battery) parts.push(`电量: ${status.battery}%`);
-        if (status.last_active) parts.push(`最后活跃: ${new Date(status.last_active).toLocaleString('zh-CN')}`);
-        if (parts.length) {
-          userStatusContext = `\n## 用户当前状态\n${parts.join(' | ')}`;
-        }
-      }
-    } catch (e) {
-      console.warn('获取记忆/状态失败:', e);
-    }
+    // 打包角色设定
+    const roleSettings = role ? {
+      nickname: role.name,
+      systemPrompt: (role as any).systemPrompt || '',
+      personality: (role as any).personality || '',
+      languageStyle: (role as any).languageStyle || '',
+      examples: (role as any).examples || '',
+      memory: (role as any).memory || '',
+      knowledgeBase: (role as any).knowledgeBase || ''
+    } : undefined;
 
-    // 获取当前北京时间
-    const now = new Date();
-    const beijingTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
-    const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-    const timeStr = `${beijingTime.getUTCFullYear()}年${beijingTime.getUTCMonth() + 1}月${beijingTime.getUTCDate()}日 ${weekdays[beijingTime.getUTCDay()]} ${String(beijingTime.getUTCHours()).padStart(2, '0')}:${String(beijingTime.getUTCMinutes()).padStart(2, '0')}`;
+    // 打包历史记录（带时间戳）
+    const historyMessages = history.map(m => {
+      const timestamp = new Date(m.createdAt).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      }).replace(/\//g, '-');
+      return {
+        role: m.role,
+        content: m.content,
+        timestamp
+      };
+    });
 
-    const systemPrompt = `你是用户的AI助手，拥有以下能力：
-
-## 当前时间
-${timeStr}
-
-## 你的能力
-1. **记忆能力**：你可以访问用户记忆，下面会提供最近的记忆和截屏数据
-2. **闹钟提醒**：你可以帮用户设置闹钟，到时间会自动提醒
-3. **日历事件**：你可以帮用户创建日程安排
-4. **记账**：你可以帮用户记录支出
-5. **联网搜索**：你可以搜索网络获取最新信息
-6. **查询记忆**：你可以搜索用户的历史记忆（用[QUERY:关键词]查询）
-7. **查询聊天记录**：你可以搜索之前的聊天历史（用[SEARCH_CHAT:关键词]查询，比如查找某人说过的话、某个事件等）
-8. **应用截屏感知**：你可以看到用户在微信、美团、小红书、咸鱼等应用的截屏内容
-
-## 特殊指令格式
-这些指令会被系统自动执行，**指令本身会被隐藏，用户看不到**。你可以自由使用。
-- 设置闹钟：[REMINDER:2026-03-12T08:00:00|提醒内容]
-- 创建日程：[EVENT:2026-03-12T14:00:00|会议标题|会议描述]
-- 记账：[EXPENSE:50|food|午餐]
-- 搜索网络：[SEARCH:查询内容]
-- 查询记忆：[QUERY:关键词]
-- 查询聊天：[SEARCH_CHAT:查询内容]
-
-**注意：指令会被自动移除，用户只会看到你的自然语言回复。所以不要在回复中提及"我正在搜索"之类的话，直接给出结果即可。**
-${memoryContext}
-${screenCaptureContext}
-${userStatusContext}
-
-## 角色设定
-${rolePrompt || '（无特定角色设定）'}
-
-## 回复格式
-请输出JSON：{"segments": ["第一段回复", "第二段回复"]}
-若无法输出JSON，用分隔符 ${chatSettings.chunkSeparator} 分段。`;
-
-    // 像 momoyu 一样：默认发送全部消息给 API
-    const apiMessages = [
-      { role: 'system', content: systemPrompt },
-      ...history.map((m) => ({ role: m.role, content: m.content })),
-    ];
-    
-    console.log('%c[DEBUG] callModelForChat - 发送给AI的消息', 'color: #4ecdc4; font-weight: bold');
+    console.log('%c[DEBUG] callModelForChat - 调用后端流式接口', 'color: #4ecdc4; font-weight: bold');
     console.log('  chatId:', chatId);
-    console.log('  消息数量:', apiMessages.length);
     console.log('  历史条数:', history.length);
+    console.log('  角色设定:', roleSettings);
 
     try {
-      const resp = await fetch(`${apiSettings.baseUrl}/v1/chat/completions`, {
+      // 调用后端流式接口
+      const backendUrl = apiSettings.baseUrl?.replace('/v1', '') || 'https://anybody.onrender.com';
+      const resp = await fetch(`${backendUrl}/chat/stream`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiSettings.apiKey}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: apiSettings.model,
-          messages: apiMessages,
-          response_format: { type: 'json_object' },
-        }),
+          chat_id: chatId,
+          role_id: chat?.roleId,
+          message: history[history.length - 1]?.content || '',
+          history_messages: historyMessages.slice(0, -1), // 不包含最后一条（当前消息）
+          role_settings: roleSettings
+        })
       });
 
       if (!resp.ok) {
-        const text = await resp.text();
-        pushAssistantChunkWithUnread(chatId, `调用失败：${resp.status} ${text}`);
+        pushAssistantChunkWithUnread(chatId, `后端调用失败：${resp.status}`);
         setIsTyping(false);
         return;
       }
 
-      const data = await resp.json();
-      const rawContent: string = data?.choices?.[0]?.message?.content ?? '';
-      
-      console.log('%c[DEBUG] AI回复', 'color: #6c5ce7; font-weight: bold');
-      console.log('  原始回复:', rawContent.slice(0, 200));
-      
-      let segments: string[] = [];
-      try {
-        const parsed = JSON.parse(rawContent);
-        if (parsed?.segments && Array.isArray(parsed.segments)) {
-          segments = parsed.segments.map((s: any) => String(s));
+      // 接收 SSE 流式响应
+      const reader = resp.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullReply = '';
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.content) {
+                  fullReply += data.content;
+                  pushAssistantChunkWithUnread(chatId, data.content);
+                } else if (data.done) {
+                  console.log('✅ 流式接收完成');
+                } else if (data.error) {
+                  pushAssistantChunkWithUnread(chatId, `错误: ${data.error}`);
+                }
+              } catch (e) {
+                // 忽略 JSON 解析错误
+              }
+            }
+          }
         }
-      } catch (e) {
-        // ignore JSON parse error, fallback below
       }
 
-      if (!segments.length) {
-        const text = rawContent || data?.choices?.[0]?.message?.content || '';
-        const sep = chatSettings.chunkSeparator || '<|chunk|>';
-        segments = text.split(sep).filter(Boolean);
-        if (!segments.length && text) segments = [text];
-      }
-
-      let delay = 200;
-      const totalDelay = delay + segments.length * chatSettings.chunkIntervalMs;
-      segments.forEach((chunk) => {
-        window.setTimeout(() => pushAssistantChunkWithUnread(chatId, chunk), delay);
-        delay += chatSettings.chunkIntervalMs;
-      });
-      window.setTimeout(() => setIsTyping(false), totalDelay);
+      setIsTyping(false);
+      console.log('%c[DEBUG] 完整回复已接收', 'color: #6c5ce7; font-weight: bold');
+      console.log('  回复长度:', fullReply.length);
     } catch (e: any) {
       pushAssistantChunkWithUnread(chatId, `调用异常：${e?.message || e}`);
       setIsTyping(false);
@@ -1344,15 +1274,24 @@ ${rolePrompt || '（无特定角色设定）'}
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
           </svg>
         </label>
-        <input
-          className="flex-1 min-w-0 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none text-sm"
-          placeholder="输入消息..."
+        <textarea
+          className="flex-1 min-w-0 bg-white/60 border border-white/60 rounded-xl px-3 py-2 focus:outline-none text-sm resize-none overflow-y-auto"
+          style={{ minHeight: '40px', maxHeight: '120px' }}
+          placeholder="输入消息... (Shift+Enter换行)"
+          rows={1}
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => {
+            setInput(e.target.value);
+            // 自动调整高度
+            e.target.style.height = 'auto';
+            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               handleSend();
+              // 重置高度
+              e.currentTarget.style.height = '40px';
             }
           }}
         />
