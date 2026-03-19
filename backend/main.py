@@ -677,12 +677,13 @@ async def lifespan(app: FastAPI):
     global supabase
     if SUPABASE_URL and SUPABASE_KEY:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    scheduler.add_job(check_reminders, 'interval', minutes=1)
-    scheduler.add_job(proactive_thinking, 'interval', minutes=5)
-    scheduler.add_job(update_persona, 'interval', hours=24)
-    scheduler.start()
+    # 所有自动任务已关闭，避免不必要的 API 调用
+    # scheduler.add_job(check_reminders, 'interval', minutes=1)
+    # scheduler.add_job(proactive_thinking, 'interval', minutes=5)
+    # scheduler.add_job(update_persona, 'interval', hours=24)
+    # scheduler.start()
     yield
-    scheduler.shutdown()
+    # scheduler.shutdown()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -699,39 +700,39 @@ async def upload_gps(d: GPSData):
     }).execute()
     print(f"📍 GPS: {d.city or d.address or f'{d.latitude},{d.longitude}'} | 电量:{d.battery}% | 充电:{d.charging}")
     
-    # 充电时触发主动消息
-    if d.charging:
-        try:
-            roles = get_all_roles()
-            if roles:
-                beh = get_behavior()
-                active_id = beh.get("current_active_role_id")
-                role = next((r for r in roles if r.get("id") == active_id), roles[0])
-                
-                hr = (datetime.utcnow().hour + 8) % 24
-                chats = supabase.table("chat_messages").select("content").order("created_at", desc=True).limit(5).execute().data or []
-                chat_ctx = "\n".join([c["content"][:60] for c in chats]) or "无"
-                
-                prompt = f"时间：{hr}点\n位置：{d.address or '未知'}\n电量：{d.battery}%\n\n【最近聊天】\n{chat_ctx}\n\n---\n用户刚给手机充电，你想主动说点什么？"
-                sp = build_role_prompt(role)
-                msg = (await call_ai(sp or "你是AI助手", prompt)).strip()
-                
-                if msg:
-                    name = role.get("name", "AI")
-                    supabase.table("proactive_messages").insert({
-                        "role_id": role.get("id"), "role_name": name,
-                        "content": msg, "trigger": "charging"
-                    }).execute()
-                    # 推送充电触发消息通知
-                    await push_notification(
-                        title=f"🔋 {name}",
-                        content=msg,
-                        role_name=name,
-                        sound="shake"
-                    )
-                    print(f"💬 充电触发消息: {msg[:50]}...")
-        except Exception as e:
-            print(f"⚠️ 充电触发消息失败: {e}")
+    # 充电触发消息已关闭
+    # if d.charging:
+    #     try:
+    #         roles = get_all_roles()
+    #         if roles:
+    #             beh = get_behavior()
+    #             active_id = beh.get("current_active_role_id")
+    #             role = next((r for r in roles if r.get("id") == active_id), roles[0])
+    #             
+    #             hr = (datetime.utcnow().hour + 8) % 24
+    #             chats = supabase.table("chat_messages").select("content").order("created_at", desc=True).limit(5).execute().data or []
+    #             chat_ctx = "\n".join([c["content"][:60] for c in chats]) or "无"
+    #             
+    #             prompt = f"时间：{hr}点\n位置：{d.address or '未知'}\n电量：{d.battery}%\n\n【最近聊天】\n{chat_ctx}\n\n---\n用户刚给手机充电，你想主动说点什么？"
+    #             sp = build_role_prompt(role)
+    #             msg = (await call_ai(sp or "你是AI助手", prompt)).strip()
+    #             
+    #             if msg:
+    #                 name = role.get("name", "AI")
+    #                 supabase.table("proactive_messages").insert({
+    #                     "role_id": role.get("id"), "role_name": name,
+    #                     "content": msg, "trigger": "charging"
+    #                 }).execute()
+    #                 # 推送充电触发消息通知
+    #                 await push_notification(
+    #                     title=f"🔋 {name}",
+    #                     content=msg,
+    #                     role_name=name,
+    #                     sound="shake"
+    #                 )
+    #                 print(f"💬 充电触发消息: {msg[:50]}...")
+    #     except Exception as e:
+    #         print(f"⚠️ 充电触发消息失败: {e}")
     
     return {"success": True, "id": r.data[0]["id"] if r.data else None}
 
@@ -1548,13 +1549,13 @@ async def chat_send(req: ChatSendRequest):
     except Exception as e:
         print(f"❌ 存储AI回复失败: {e}")
     
-    # 11. 双向画像提取 & 阶段性总结（后台异步执行，不阻塞返回）
-    try:
-        await check_profile_needed(req.message, ai_reply, req.role_id)  # 用户画像
-        await check_ai_self_reflection(req.message, ai_reply, req.role_id)  # AI自我画像
-        await check_and_summary(req.role_id)
-    except Exception as e:
-        print(f"⚠️ 画像/总结处理失败: {e}")
+    # 11. 双向画像提取 & 阶段性总结已关闭，避免自动调用 API
+    # try:
+    #     await check_profile_needed(req.message, ai_reply, req.role_id)  # 用户画像
+    #     await check_ai_self_reflection(req.message, ai_reply, req.role_id)  # AI自我画像
+    #     await check_and_summary(req.role_id)
+    # except Exception as e:
+    #     print(f"⚠️ 画像/总结处理失败: {e}")
     
     # 12. 推送通知（Bark + PushPlus）
     try:
@@ -1819,19 +1820,19 @@ async def sync_message(chat_id: str, req: SyncMessageRequest):
             "created_at": time_iso
         }).execute()
         
-        # 2. 如果是 AI 回复，尝试提取画像（异步）
-        if req.role == "assistant":
-            # 获取上一条用户消息用于成对分析
-            r = supabase.table("chat_messages").select("content").eq("chat_id", chat_id).eq("sender", "user").order("created_at", desc=True).limit(1).execute()
-            user_msg = r.data[0]["content"] if r.data else ""
-            
-            if user_msg:
-                # 异步触发画像提取
-                asyncio.create_task(check_profile_needed(user_msg, req.content, req.role_id))
-                asyncio.create_task(check_ai_self_reflection(user_msg, req.content, req.role_id))
-                
-        # 3. 检查是否需要阶段总结（每30条）
-        asyncio.create_task(check_and_summary(req.role_id, 30))
+        # 2. 画像提取和总结已关闭，避免自动调用 API
+        # if req.role == "assistant":
+        #     # 获取上一条用户消息用于成对分析
+        #     r = supabase.table("chat_messages").select("content").eq("chat_id", chat_id).eq("sender", "user").order("created_at", desc=True).limit(1).execute()
+        #     user_msg = r.data[0]["content"] if r.data else ""
+        #     
+        #     if user_msg:
+        #         # 异步触发画像提取
+        #         asyncio.create_task(check_profile_needed(user_msg, req.content, req.role_id))
+        #         asyncio.create_task(check_ai_self_reflection(user_msg, req.content, req.role_id))
+        #         
+        # # 3. 检查是否需要阶段总结（每30条）
+        # asyncio.create_task(check_and_summary(req.role_id, 30))
         
         return {"success": True}
     except Exception as e:
